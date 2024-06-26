@@ -12,7 +12,7 @@ class SdrfUtil:
     def get_sdrf_file_path(folder: str) -> str:
         """
         get sdrf file path in project folder
-        :param folder: project folder obtain project files to cluster
+        :param folder: folder obtain project files to cluster
         """
         directory_path = Path(folder)
         files = directory_path.rglob('*.sdrf.tsv')
@@ -22,7 +22,7 @@ class SdrfUtil:
             raise FileNotFoundError(f'There is no sdrf file in {folder}')
 
     @staticmethod
-    def read_sdrf(sdrf_folder: str) -> dict:
+    def get_metadata_dict_from_sdrf(sdrf_folder: str) -> dict:
         """
         Read the sdrf file to obtain the relationship between samples and instruments and species in a project
         :param sdrf_folder: sdrf folder

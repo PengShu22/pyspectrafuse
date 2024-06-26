@@ -9,4 +9,3 @@ class UseCol(Enum):
 
     PARQUET_COL_TO_USI = ['reference_file_name', 'scan_number', 'sequence', 'charge']
 
-

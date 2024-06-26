@@ -2,8 +2,8 @@ from setuptools import setup, find_packages
 
 
 def readme():
-  with open('README.md') as f:
-    return f.read()
+    with open('README.md') as f:
+        return f.read()
 
 
 setup(name='pyspectrafuse',
@@ -17,21 +17,21 @@ setup(name='pyspectrafuse',
       license='LICENSE.txt',
       include_package_data=True,
       install_requires=[
-        'Click',
-        'numpy',
-        'pandas',
-        'pathlib',
-        'pyarrow',
+          'Click',
+          'numpy',
+          'pandas',
+          'pathlib',
+          'pyarrow',
+          'spectrum_utils[iplot]',
       ],
       python_requires=">=3.8",
       scripts=['pyspectrafuse/pyspectrafuse_cli.py'],
       packages=find_packages(),
       entry_points={
-        'console_scripts': [
-          'pyspectrafuse = pyspectrafuse.pyspectrafuse_cli:main'
-        ]},
+          'console_scripts': [
+              'pyspectrafuse = pyspectrafuse.pyspectrafuse_cli:main'
+          ]},
       package_data={'pypgatk': ['config/*.yaml', 'config/*.json']}, zip_safe=False)
-
 
 import codecs
 import os.path
@@ -93,4 +93,3 @@ setup(
     include_package_data=True,
     python_requires=">=3.8",
 )
-

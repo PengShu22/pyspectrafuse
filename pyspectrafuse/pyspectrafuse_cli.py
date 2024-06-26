@@ -1,5 +1,6 @@
 import click
 from pyspectrafuse.commands.quantmsio2mgf import quantmsio2mgf
+from pyspectrafuse.commands.spectrum2msp import spectrum2msp
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 REVISION = "0.1.1"
@@ -13,7 +14,9 @@ def cli():
     xzx
     """
 
+
 cli.add_command(quantmsio2mgf)
+cli.add_command(spectrum2msp)
 
 
 def main():

@@ -1,7 +1,7 @@
 import time
 import pyarrow.parquet as pq
 import pandas as pd
-import re
+import numpy as np
 from pathlib import Path
 from collections import defaultdict
 import logging
@@ -10,11 +10,17 @@ import os
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 from pyspectrafuse.common.sdrf_utils import SdrfUtil
 
-
 logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+
 class Parquet2Mgf:
+
+    @staticmethod
+    def write2mgf(target_path: str, write_content: str):
+        with open(target_path, 'a') as f:
+            logger.info(f"正在向mgf路径为: {target_path}写入spectrum")
+            f.write(write_content)
 
     @staticmethod
     def get_mz_intensity_str(mz_series, intensity_series) -> str:
@@ -36,8 +42,13 @@ class Parquet2Mgf:
 
         # Use the join method to concatenate the list of strings into a single string
         combined_str = '\n'.join(combined_list)
-
         return combined_str
+
+    @staticmethod
+    def get_usi(row, dataset_id: str):
+        usi_str = (f'mzspec:{dataset_id}:{row["reference_file_name"]}:'
+                   f'scan:{str(row["scan_number"])}:{row["sequence"]}/{row["charge"]}')
+        return usi_str
 
     @staticmethod
     def get_spectrum(row, dataset_id: str):
@@ -48,7 +59,7 @@ class Parquet2Mgf:
                    f'PEPMASS={str(row["exp_mass_to_charge"])}\n'  # pepmass
                    f'CHARGE={str(row["charge"])}+\n'  # charge
                    f'{Parquet2Mgf.get_mz_intensity_str(row["mz_array"], row["intensity_array"])}\n'  # mz and intensity
-                   f'END IONS\n'  # end
+                   f'END IONS'  # end
                    )
 
         return res_str
@@ -79,9 +90,10 @@ class Parquet2Mgf:
             row_group = parquet_batch.to_pandas()
 
             # spectrum
-            mgf_group_df['spectrum'] = row_group.apply(lambda row: Parquet2Mgf.get_spectrum(row, ParquetPathHandler(parquet_path).get_item_info()), axis=1)
+            mgf_group_df['spectrum'] = row_group.apply(
+                lambda row: Parquet2Mgf.get_spectrum(row, ParquetPathHandler(parquet_path).get_item_info()), axis=1)
 
-            sample_info_dict = SdrfUtil.read_sdrf(sdrf_path)
+            sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(sdrf_path)
 
             mgf_group_df['mgf_file_path'] = row_group.apply(
                 lambda row: '/'.join(sample_info_dict.get(row['reference_file_name']) +
@@ -94,23 +106,24 @@ class Parquet2Mgf:
                 Path(mgf_file_path).parent.mkdir(parents=True, exist_ok=True)
 
                 if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
-                    with open(mgf_file_path, 'a') as f:
-                        f.write('\n'.join(group_df["spectrum"]))
-
+                    Parquet2Mgf.write2mgf(mgf_file_path, '\n\n'.join(group_df["spectrum"]))
                     write_count_dict[group] += group_df.shape[0]
                 else:
                     remain_num = SPECTRA_NUM - write_count_dict[group]
+                    if remain_num > 0:
+                        group_df_remain = group_df.head(remain_num)
+                        Parquet2Mgf.write2mgf(mgf_file_path, '\n\n'.join(group_df_remain["spectrum"]))
+                        write_count_dict[group] += group_df_remain.shape[0]
 
-                    with open(mgf_file_path, 'a') as f:
-                        f.write('\n'.join(group_df.head(remain_num)["spectrum"]))
-
+                    # Update the index of the read and mgf files
                     relation_dict[base_mgf_path] += 1
-
                     write_count_dict[group] = 0
+
                     mgf_file_path = (f"{base_mgf_path}/{Path(parquet_path).parts[-1].split('.')[0]}_"
                                      f"{relation_dict[base_mgf_path] + 1}.mgf")
-                    with open(mgf_file_path, 'a') as f:
-                        f.write('\n'.join(group_df.tail(group_df.shape[0] - remain_num)["spectrum"]))
+                    group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
+                    Parquet2Mgf.write2mgf(mgf_file_path, '\n\n'.join(group_df_tail["spectrum"]))
+                    write_count_dict[group] += group_df_tail.shape[0]
 
     def convert_to_mgf_task(self, args):
         parquet_file_path, sdrf_file_path, res_file_path, batch_size, spectra_capacity = args

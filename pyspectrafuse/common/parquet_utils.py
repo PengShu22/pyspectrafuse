@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 class ParquetPathHandler:
     parquet_path = ""
     path_obj = None
@@ -17,7 +18,7 @@ class ParquetPathHandler:
         return self.path_obj.parts[-1].split('-')[0]
 
     @staticmethod
-    def iter_parquet_dir(dir_path:str) -> list:
+    def iter_parquet_dir(dir_path: str) -> list:
         """
         Extract the path information for all parquet files from the parquet Files subdirectory and return a list
         :param dir_path: parquet file's path
