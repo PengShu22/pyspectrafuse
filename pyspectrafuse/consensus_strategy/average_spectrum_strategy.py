@@ -15,10 +15,6 @@ class AverageSpectrumStrategy(ConsensusStrategy):
         self.MIN_FRACTION = MIN_FRACTION
         self.pepmass = pepmass
         self.msms_avg = msms_avg
-
-        msms_avg_list = ['naive', 'weighted']
-        pepmass_lst = ['naive_average', 'neutral_average', 'lower_median']
-
         self.params_dict = {
             "mode": ['encoded_clusters'],
             'dyn_range': DYN_RANGE,
@@ -41,7 +37,7 @@ class AverageSpectrumStrategy(ConsensusStrategy):
 
         return res, single_spectrum_df
 
-    def average_spectrum(self, spectra, pepmass='', charge='', Nreps='', pep='', usi=''):
+    def average_spectrum(self, spectra, pepmass='', peptidoform='', charge='', Nreps='', pep='', usi=''):
         '''
         Produces an average spectrum for a cluster.
 
@@ -171,10 +167,10 @@ class AverageSpectrumStrategy(ConsensusStrategy):
         new_intensity_array = new_intensity_array[idx]
         new_mz_array = new_mz_array[idx]
 
-        new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability',
+        new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
                               'usi', 'charge', 'mz_array', 'intensity_array']
         # 返回生成的新的共识谱的信息
-        return pd.Series([pepmass, Nreps, pep, usi, charge, new_mz_array, new_intensity_array],
+        return pd.Series([pepmass, Nreps, pep, peptidoform, usi, charge, new_mz_array, new_intensity_array],
                          index=new_spectrum_index)
 
     @staticmethod
@@ -232,8 +228,11 @@ class AverageSpectrumStrategy(ConsensusStrategy):
         spectra = single_group['ms2spectrumDict'].to_list()
         single_spectra_params = spectra[0]['params']
         pepmass_spectrum, charge = self.get_pepmass(spectra)
+        peptidoform = '; '.join(np.unique(single_group['peptidoform']))
+
         return self.average_spectrum(spectra=spectra,
                                      pepmass=pepmass_spectrum,
+                                     peptidoform=peptidoform,
                                      charge=charge,
                                      Nreps=Nreps,
                                      pep=posterior_error_probability,

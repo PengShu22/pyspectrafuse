@@ -85,8 +85,10 @@ class BinningStrategy(ConsensusStrategy):
         precursor_mz = np.mean(precursor_mzs)
         precursor_charge = precursor_charges[0]
 
-        new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability',
+        peptidoform = '; '.join(np.unique(single_group['peptidoform']))
+
+        new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
                               'usi', 'charge', 'mz_array', 'intensity_array']
         # 返回生成的新的共识谱的信息
-        return pd.Series([precursor_mz, Nreps, posterior_error_probability, usi, precursor_charge, mzs, intensities],
+        return pd.Series([precursor_mz, Nreps, posterior_error_probability, peptidoform, usi, precursor_charge, mzs, intensities],
                          index=new_spectrum_index)  # 需要加usi, 然后comment用

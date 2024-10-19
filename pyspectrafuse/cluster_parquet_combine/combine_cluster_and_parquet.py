@@ -1,5 +1,6 @@
 import logging
 import pandas as pd
+import numpy as np
 from pathlib import Path
 import pyarrow.parquet as pq
 from collections import defaultdict
@@ -8,7 +9,6 @@ from pyspectrafuse.common.sdrf_utils import SdrfUtil
 from pyspectrafuse.mgf_convert.parquet2mgf import Parquet2Mgf
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 
-
 logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -16,22 +16,21 @@ logger = logging.getLogger(__name__)
 class CombineCluster2Parquet:
 
     def __init__(self):
-        self.combine_info_col = ['mz_array', 'intensity_array', 'charge',
+        self.combine_info_col = ['mz_array', 'intensity_array', 'charge', 'peptidoform',
                                  'pepmass', 'posterior_error_probability', 'global_qvalue']
 
     @staticmethod
-    def map_strategy_to_cluster(df: pd.DataFrame, df_1: pd.DataFrame, classify_path: str, order_range: range):
+    def map_strategy_to_cluster(map_dict: dict, df_1: pd.DataFrame, classify_path: str, order_range: range):
         df_1["mgf_order"] = order_range
         df_1["mgf_path"] = classify_path
-        df_1.set_index(['mgf_path', 'mgf_order'], inplace=True)
-        # 给聚类结果文件加上spectrum和pep和global列
-        df_1.index = df.index.to_flat_index()
+        df_1['mgf_path_index'] = df_1['mgf_path'] + "/" + df_1['mgf_order'].astype(str)
 
-        # 然后，你可以使用一个循环来将"global value"列和"pep"列添加到df1中
-        for map_col in ['posterior_error_probability', 'global_qvalue',
-                        'mz_array', 'intensity_array', 'charge', 'usi', 'pepmass']:
-            df[map_col] = df.index.to_flat_index().map(df_1[map_col])
-        return df
+        col_need = ['posterior_error_probability', 'global_qvalue', 'peptidoform',
+                    'mz_array', 'intensity_array', 'charge', 'usi', 'pepmass', 'cluster_accession']
+
+        df_1['cluster_accession'] = df_1['mgf_path_index'].apply(lambda x: map_dict[x])
+
+        return df_1.loc[:, col_need]
 
     @staticmethod
     def read_cluster_tsv(tsv_file_path: str):
@@ -45,17 +44,20 @@ class CombineCluster2Parquet:
         clu_df.dropna(axis=0, inplace=True)  # 删除空行
         return clu_df
 
-    def inject_cluster_info(self, path_parquet, path_sdrf,  path_cluster_tsv, spectra_num=1000000, batch_size=200000):
+    def inject_cluster_info(self, path_parquet, clu_map_dict, path_sdrf, spectra_num=1000000, batch_size=200000):
         # read parquet file and the cluster result tsv file of Maracluster program.
         parquet_file = pq.ParquetFile(path_parquet)
-        cluster_res_df = self.read_cluster_tsv(path_cluster_tsv)
 
+        # cluster_res_df = self.read_cluster_tsv(path_cluster_tsv)
+        cluster_res_lst = []
+
+        sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(path_sdrf)
         # TODO: 这里后面的结果文件应该要修改为增加他的一个分类情况路径在聚类结果文件当中，这个部分应该在NextFlow里面解决，这里只是为了方便调试
         # cluster_res_df.loc[:, "mgf_path"] = cluster_res_df.loc[:, "mgf_path"].apply(lambda x: 'Homo sapiens/Q '
-        #                                                                                       'Exactive/charge2/mgf '
+        #                                                                                       'Exactive/charge3/mgf '
         #                                                                                       'files/' + x)
-        cluster_res_df.set_index(['mgf_path', 'index'], inplace=True)
-
+        # # cluster_res_df.set_index(['mgf_path', 'index'], inplace=True)
+        # cluster_res_df.index = cluster_res_df.apply(lambda row: f"{row['mgf_path']}/{row['index']}", axis=1)
         basename = ParquetPathHandler(path_parquet).get_item_info()  # 'PXD008467'
 
         write_count_dict = defaultdict(int)  # Counting dictionary
@@ -64,7 +66,7 @@ class CombineCluster2Parquet:
         BATCH_SIZE = batch_size
 
         for parquet_batch in parquet_file.iter_batches(batch_size=BATCH_SIZE,
-                                                       columns=UseCol.PARQUET_COL_TO_MGF.value +
+                                                       columns=UseCol.PARQUET_COL_TO_MSP.value +
                                                                UseCol.PARQUET_COL_TO_FILTER.value):
             row_group = parquet_batch.to_pandas()
             row_group.rename({'exp_mass_to_charge': 'pepmass'}, axis=1, inplace=True)
@@ -72,10 +74,6 @@ class CombineCluster2Parquet:
             # spectrum
             mgf_group_df = row_group.loc[:, self.combine_info_col]
             mgf_group_df['usi'] = row_group.apply(lambda row: Parquet2Mgf.get_usi(row, basename), axis=1)  # usi
-            # =============================如果使用平均质谱方法来生成共识谱，需要保留时间这一列
-            # mgf_group_df['retention_time'] = row_group['retention_time']
-
-            sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(path_sdrf)
 
             mgf_group_df['mgf_file_path'] = row_group.apply(
                 lambda row: '/'.join(sample_info_dict.get(row['reference_file_name']) +
@@ -90,7 +88,11 @@ class CombineCluster2Parquet:
                     mgf_order_range = range(write_count_dict[group],
                                             write_count_dict[group] + group_df.shape[0],
                                             1)
-                    cluster_res_df = self.map_strategy_to_cluster(cluster_res_df, group_df, mgf_file_path, mgf_order_range)
+
+                    # 把所有的合并完的信息的df加入到列表当中
+                    cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                                                                  mgf_order_range)
+                    cluster_res_lst.append(cluster_res_df)
 
                     write_count_dict[group] += group_df.shape[0]
                 else:
@@ -99,7 +101,9 @@ class CombineCluster2Parquet:
                         group_df_remain = group_df.head(remain_num)
                         mgf_order_range = range(write_count_dict[group],
                                                 write_count_dict[group] + group_df_remain.shape[0], 1)
-                        cluster_res_df = self.map_strategy_to_cluster(cluster_res_df, group_df, mgf_file_path, mgf_order_range)
+                        cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                                                                      mgf_order_range)
+                        cluster_res_lst.append(cluster_res_df)
 
                         write_count_dict[group] += group_df_remain.shape[0]
 
@@ -112,10 +116,17 @@ class CombineCluster2Parquet:
                     group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
                     mgf_order_range = range(write_count_dict[group],
                                             write_count_dict[group] + group_df_tail.shape[0], 1)
-                    cluster_res_df = self.map_strategy_to_cluster(cluster_res_df, group_df, mgf_file_path, mgf_order_range)
+                    cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                                                                  mgf_order_range)
+                    cluster_res_lst.append(cluster_res_df)
 
                     write_count_dict[group] += group_df_tail.shape[0]
 
-            return cluster_res_df
+            return self.combine_res_lst(cluster_res_lst)
 
-
+    def combine_res_lst(self, lst: list) -> pd.DataFrame:
+        df_num = len(lst)
+        if df_num > 1:
+            return pd.DataFrame(np.vstack(lst), columns=lst[0].columns)
+        else:
+            return lst[0]

@@ -77,7 +77,8 @@ setup(
         'numpy',
         'pandas',
         'pathlib',
-        'pyarrow'
+        'pyarrow',
+        'pyteomics'
     ],
     entry_points={
         "console_scripts": ['pyspectrafuse_cli = pyspectrafuse.pyspectrafuse_cli:main']
