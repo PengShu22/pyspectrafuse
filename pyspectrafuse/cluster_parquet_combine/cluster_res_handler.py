@@ -59,25 +59,28 @@ class ClusterResHandler:
     def get_pattern(self):
         return re.compile(f'MaRaCluster\\.clusters_p{self.cluster_threshold}\\.tsv')
 
-    def read_cluster_tsv(self, tsv_file_path: Path):
+    @staticmethod
+    def get_cluster_dict(tsv_file_path: Path, species: str, instrument: str, charge: str):
         """
-        read and rename col
+
         :param tsv_file_path:
+        :param species:
+        :param instrument:
+        :param charge:
         :return:
         """
         clu_df = pd.read_csv(tsv_file_path, sep='\t', header=None)
         clu_df.columns = ['mgf_path', 'index', 'cluster_accession']
         clu_df.dropna(axis=0, inplace=True)  # 删除空行
-        return clu_df
+
+        sample_info = f"{species}/{instrument}/{charge}"
+        clu_df.loc[:, "mgf_path"] = clu_df.loc[:, "mgf_path"].apply(
+            lambda x: sample_info + "/mgf files/" + x)
+        clu_df['mgf_path'] = clu_df.apply(lambda row: f"{row['mgf_path']}/{row['index']}", axis=1)
+        clu_df = clu_df.loc[:, ['mgf_path', 'cluster_accession']]
+        mgf_ind_clu_acc_dict = pd.Series(clu_df.cluster_accession.values, index=clu_df.mgf_path).to_dict()
+
+        return mgf_ind_clu_acc_dict
 
 
-if __name__ == '__main__':
-    # 定义目录路径
-    base_dir = r'G:\graduation_project\generate-spectrum-library\get_msp\PXD008467'
 
-    # 给定的聚类阈值参数
-    cluster_threshold = 30
-
-    clusterResHandler = ClusterResHandler(clu_thr=cluster_threshold, dirname=base_dir)
-    res = clusterResHandler.walk_dir()
-    print('end')
