@@ -27,8 +27,11 @@ def find_target_ext_files(directory: str, extensions: str) -> list:
 
 @click.command("msp", short_help="get msp format file")
 @click.option('--parquet_dir', help='The project directory, the directory must obtain parquet and sdrf files.')
-@click.option('--cluster_threshold', help='The pavlue threshold is clustered by maracluster')
-@click.option('--strategy_type', default='best', help='Consensus Spectrum generation method')
+@click.option('--method_type', help='Consensus Spectrum generation method')
+@click.option('--cluster_tsv_file', help='the MaRaCluster output file')
+@click.option('--species', help='species name')
+@click.option('--instrument', help='instrument name')
+@click.option('--charge', help='charge name')
 @click.option('--sim', default='dot', help='The similarity measure method for the most consensus spectrum generation '
                                            'method')
 @click.option('--fragment_mz_tolerance', default=0.02,
@@ -49,15 +52,17 @@ def find_target_ext_files(directory: str, extensions: str) -> list:
 @click.option('--pepmass', type=click.Choice(['naive_average', 'neutral_average', 'lower_median']),
               default='lower_median')
 @click.option('--msms_avg', type=click.Choice(['naive', 'weighted']), default='weighted')
-def spectrum2msp(parquet_dir, strategy_type, cluster_threshold,
+def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument, charge,
                  sim='dot', fragment_mz_tolerance=0.02,  # most method params
                  min_mz=100., max_mz=2000., bin_size=0.02, peak_quorum=0.25, edge_case_threshold=0.5,  # bin
                  diff_thresh=0.01, dyn_range=1000, min_fraction=0.5, pepmass='lower_median', msms_avg='weighted'):
     """
-
-    :param parquet_dir: 项目dirname ，
-    :param strategy_type: 共识谱生成反复噶
-    :param cluster_threshold:  聚类阈值
+    :param cluster_tsv_file:
+    :param charge:
+    :param instrument:
+    :param species:
+    :param parquet_dir: 项目dirname 
+    :param strategy_type: 共识谱生成方法类型
     :param sim:
     :param fragment_mz_tolerance:
     :param min_mz:
@@ -72,65 +77,64 @@ def spectrum2msp(parquet_dir, strategy_type, cluster_threshold,
     :param msms_avg:
     :return:
     """
-
+    # print(f'tsv_file_path:{cluster_tsv_file}')
+    # print(species)
+    # print(instrument)
+    # print(charge)
     path_sdrf = find_target_ext_files(parquet_dir, '.sdrf.tsv')[0]  # sdrf 文件的地址
     path_parquet_lst = find_target_ext_files(parquet_dir, '.parquet')  # parquet_dir只是项目的地址, 这里返回所有的parquet文件
-    print(path_parquet_lst)
+    # print(path_parquet_lst)
 
-    output_dir = Path(f'{parquet_dir}/msp')  # 创建结果MSP目录
+    output_dir = Path(f'{parquet_dir}/msp/{species}/{instrument}/{charge}')  # 创建结果MSP目录
     output_dir.mkdir(parents=True, exist_ok=True)
-    basename = ParquetPathHandler(parquet_dir).get_item_info()
+    basename = ParquetPathHandler(parquet_dir).get_item_info()  # PXD008467
     output = f"{output_dir}/{basename}_{uuid.uuid4()}.msp.txt"  # 一个项目对应一个msp格式文件
 
-    clusterResHandler = ClusterResHandler(clu_thr=cluster_threshold, dirname=parquet_dir)
-    cluster_res_dict = clusterResHandler.walk_dir()  # key为charge2, value为所有电荷为2的物种和仪器的dict[key：mgf唯一索引  value: 聚类的簇]
+    # 得到聚类结果文件，添加了物种仪器电荷信息，因为在nf中，在work目录中没有这个信息，找不到
+    cluster_res_dict = ClusterResHandler.get_cluster_dict(cluster_tsv_file, species, instrument, charge)
 
     # TODO: 根据电荷自动找parquet文件
 
-    for path_parquet in path_parquet_lst:
-        charge = f"charge{Path(path_parquet).parts[-1].split('-')[1][0]}"  # 得到parquet的电荷信息
+    path_parquet = [i for i in path_parquet_lst if i.split('-')[-1][0] == charge[-1]][0]
 
-        # 获取该parquet电荷文件对应的映射字典
-        cluster_map_dict = cluster_res_dict[charge]
+    df = CombineCluster2Parquet().inject_cluster_info(path_parquet=path_parquet,
+                                                      path_sdrf=path_sdrf,
+                                                      clu_map_dict=cluster_res_dict)
 
-        df = CombineCluster2Parquet().inject_cluster_info(path_parquet=path_parquet,
-                                                          path_sdrf=path_sdrf,
-                                                          clu_map_dict=cluster_map_dict)
+    # 不同的肽段修饰(基于peptidoform)
+    # pep_lst = df['peptidoform'].to_list()
+    # print(f"sequence num is {len(pep_lst)}")
+    # print(f"去重后的sequence num is {len(np.unique(pep_lst))}")
 
-        # 不同的肽段修饰(基于peptidoform)
-        # pep_lst = df['peptidoform'].to_list()
-        # print(f"sequence num is {len(pep_lst)}")
-        # print(f"去重后的sequence num is {len(np.unique(pep_lst))}")
+    consensus_strategy = None
+    if method_type == "best":
+        consensus_strategy = BestSpectrumStrategy()
 
-        consensus_strategy = None
-        if strategy_type == "best":
-            consensus_strategy = BestSpectrumStrategy()
+    elif method_type == "most":
+        consensus_strategy = MostSimilarStrategy(sim=sim, fragment_mz_tolerance=fragment_mz_tolerance)
 
-        elif strategy_type == "most":
-            consensus_strategy = MostSimilarStrategy(sim=sim, fragment_mz_tolerance=fragment_mz_tolerance)
+    elif method_type == 'bin':
+        consensus_strategy = BinningStrategy(min_mz=min_mz,
+                                             max_mz=max_mz,
+                                             bin_size=bin_size,
+                                             peak_quorum=peak_quorum,
+                                             edge_case_threshold=edge_case_threshold)
 
-        elif strategy_type == 'bin':
-            consensus_strategy = BinningStrategy(min_mz=min_mz,
-                                                 max_mz=max_mz,
-                                                 bin_size=bin_size,
-                                                 peak_quorum=peak_quorum,
-                                                 edge_case_threshold=edge_case_threshold)
+    elif method_type == 'average':
+        consensus_strategy = AverageSpectrumStrategy(DIFF_THRESH=diff_thresh,
+                                                     DYN_RANGE=dyn_range,
+                                                     MIN_FRACTION=min_fraction,
+                                                     pepmass=pepmass,
+                                                     msms_avg=msms_avg)
 
-        elif strategy_type == 'average':
-            consensus_strategy = AverageSpectrumStrategy(DIFF_THRESH=diff_thresh,
-                                                         DYN_RANGE=dyn_range,
-                                                         MIN_FRACTION=min_fraction,
-                                                         pepmass=pepmass,
-                                                         msms_avg=msms_avg)
+    if consensus_strategy:
+        consensus_spectrum_df, single_spectrum_df = consensus_strategy.consensus_spectrum_aggregation(
+            df)  # 获得共识谱的df
 
-        if consensus_strategy:
-            consensus_spectrum_df, single_spectrum_df = consensus_strategy.consensus_spectrum_aggregation(
-                df)  # 获得共识谱的df
-
-            # 转化为msp文件需要的格式
-            for spectrum_df in [consensus_spectrum_df, single_spectrum_df]:
-                spectrum_df.loc[:, 'msp_fmt'] = spectrum_df.apply(lambda row: MspUtil.get_msp_fmt(row), axis=1)
-                MspUtil.write2msp(output, '\n\n'.join(spectrum_df['msp_fmt']))
-        else:
-            raise ValueError("Unknown strategy type, The current type can only be one of [best, most, bin, average]")
+        # 转化为msp文件需要的格式
+        for spectrum_df in [consensus_spectrum_df, single_spectrum_df]:
+            spectrum_df.loc[:, 'msp_fmt'] = spectrum_df.apply(lambda row: MspUtil.get_msp_fmt(row), axis=1)
+            MspUtil.write2msp(output, '\n\n'.join(spectrum_df['msp_fmt']))
+    else:
+        raise ValueError("Unknown strategy type, The current type can only be one of [best, most, bin, average]")
 
