@@ -28,9 +28,16 @@ class CombineCluster2Parquet:
         col_need = ['posterior_error_probability', 'global_qvalue', 'peptidoform',
                     'mz_array', 'intensity_array', 'charge', 'usi', 'pepmass', 'cluster_accession']
 
-        df_1['cluster_accession'] = df_1['mgf_path_index'].apply(lambda x: map_dict[x])
+        # 存在则映射，不存在则返回NaN（新建列场景下，NaN即表示跳过赋值）
+        df_1['cluster_accession'] = df_1['mgf_path_index'].apply(
+            lambda x: map_dict.get(x, np.nan)
+        )
+        valid_df = df_1[pd.notna(df_1['cluster_accession'])]  # 等价于 df_1[~pd.isna(df_1['cluster_accession'])]
 
-        return df_1.loc[:, col_need]
+        # 步骤2：选取需要的列col_need
+        result_df = valid_df.loc[:, col_need]
+
+        return result_df
 
     @staticmethod
     def read_cluster_tsv(tsv_file_path: str):
@@ -46,6 +53,9 @@ class CombineCluster2Parquet:
 
     def inject_cluster_info(self, path_parquet, clu_map_dict, path_sdrf, spectra_num=1000000, batch_size=200000):
         # read parquet file and the cluster result tsv file of Maracluster program.
+        print("inject cluster_info: path_parquet:", path_parquet)
+        if type(path_parquet) == list:
+            path_parquet = path_parquet[0]
         parquet_file = pq.ParquetFile(path_parquet)
 
         # cluster_res_df = self.read_cluster_tsv(path_cluster_tsv)
@@ -73,20 +83,21 @@ class CombineCluster2Parquet:
 
             # spectrum
             mgf_group_df = row_group.loc[:, self.combine_info_col]
-            mgf_group_df['usi'] = row_group.apply(lambda row: Parquet2Mgf.get_usi(row, basename), axis=1)  # usi
+            #mgf_group_df['usi'] = row_group.apply(lambda row: Parquet2Mgf.get_usi(row, basename), axis=1)  # usi
+            mgf_group_df['usi'] = row_group['USI']
 
             mgf_group_df['mgf_file_path'] = row_group.apply(
-                lambda row: '/'.join(sample_info_dict.get(row['reference_file_name']) +
+                lambda row: '/'.join(sample_info_dict.get(Parquet2Mgf.get_filename_from_usi(row)) +
                                      ['charge' + str(row["charge"]), 'mgf files']), axis=1)
 
             for group, group_df in mgf_group_df.groupby('mgf_file_path'):
                 base_mgf_path = group
                 mgf_file_path = (f"{group}/{Path(path_parquet).parts[-1].split('.')[0]}_"
-                                 f"{file_index_dict[base_mgf_path] + 1}.mgf")
+                                 f"{file_index_dict[base_mgf_path] + 1}.mgf")      # 'Homo sapiens/Orbitrap Fusion Lumos/charge4/mgf files/PXD004732-consensus_1.mgf/1': 1
 
                 if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
-                    mgf_order_range = range(write_count_dict[group],
-                                            write_count_dict[group] + group_df.shape[0],
+                    mgf_order_range = range(write_count_dict[group]+1,
+                                            write_count_dict[group] + group_df.shape[0]+1,
                                             1)
 
                     # 把所有的合并完的信息的df加入到列表当中

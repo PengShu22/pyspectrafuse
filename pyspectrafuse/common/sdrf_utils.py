@@ -28,19 +28,23 @@ class SdrfUtil:
         :param sdrf_folder: sdrf folder
         :return:
         """
+        # print("reading sdrf file: {}".format(sdrf_folder))
         sdrf_df = pd.read_csv(sdrf_folder, sep='\t')
         sdrf_feature_df = pd.DataFrame()
         try:
-            sdrf_feature_df = sdrf_df.loc[:, ['comment[data file]', 'characteristics[organism]', 'comment[instrument]']]
+            sdrf_feature_df = sdrf_df.loc[:, ['comment[data file]', 'Characteristics[organism]', 'comment[instrument]']]
         except KeyError:
             print(f'{sdrf_folder} file has some format error, please check the col index format.')
+
+        # print(sdrf_feature_df.head())
+        # print(sdrf_feature_df.columns.tolist())
 
         sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].apply(lambda x: x.split('.')[0])
         sdrf_feature_df['comment[instrument]'] = sdrf_feature_df['comment[instrument]'].apply(
             lambda x: re.search(r'=(.*)', [i for i in x.split(';') if i.startswith("NT=")].pop()).group(1))
 
         sdrf_feature_df['organism_instrument'] = sdrf_feature_df[
-            ['characteristics[organism]', 'comment[instrument]']].apply(lambda x: list(x), axis=1)
+            ['Characteristics[organism]', 'comment[instrument]']].apply(lambda x: list(x), axis=1)
         sample_info_dict = sdrf_feature_df.set_index('comment[data file]')['organism_instrument'].to_dict()
         return sample_info_dict
 

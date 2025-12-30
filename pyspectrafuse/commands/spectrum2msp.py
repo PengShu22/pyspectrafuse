@@ -1,4 +1,6 @@
 import logging
+from os.path import split
+
 import click
 from pathlib import Path
 from pyspectrafuse.common.msp_utils import MspUtil
@@ -81,9 +83,11 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
     # print(species)
     # print(instrument)
     # print(charge)
+    split_type = ""
     path_sdrf = find_target_ext_files(parquet_dir, '.sdrf.tsv')[0]  # sdrf 文件的地址
+    print("path_sdrf", path_sdrf)
     path_parquet_lst = find_target_ext_files(parquet_dir, '.parquet')  # parquet_dir只是项目的地址, 这里返回所有的parquet文件
-    # print(path_parquet_lst)
+    print("parquet path is",path_parquet_lst)
 
     output_dir = Path(f'{parquet_dir}/msp/{species}/{instrument}/{charge}')  # 创建结果MSP目录
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,14 +96,18 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
 
     # 得到聚类结果文件，添加了物种仪器电荷信息，因为在nf中，在work目录中没有这个信息，找不到
     cluster_res_dict = ClusterResHandler.get_cluster_dict(cluster_tsv_file, species, instrument, charge)
+    print("cluster_res_dict", cluster_res_dict)
 
     # TODO: 根据电荷自动找parquet文件
+    # 如果parquet文件以电荷拆分，根据电荷查询对应的parquet文件，因为大文件下一个charge有多个parquet
+    if split_type == "charge":
+        path_parquet = [i for i in path_parquet_lst if i.split('-')[-1][0] == charge[-1]][0]
+    else:
+        path_parquet = path_parquet_lst
 
-    path_parquet = [i for i in path_parquet_lst if i.split('-')[-1][0] == charge[-1]][0]
-
-    df = CombineCluster2Parquet().inject_cluster_info(path_parquet=path_parquet,
-                                                      path_sdrf=path_sdrf,
-                                                      clu_map_dict=cluster_res_dict)
+    df = CombineCluster2Parquet().inject_cluster_info(path_parquet=path_parquet, # C:\\E\\graduation\\cluster\\PXD004732\\parquet_files\\PXD004732.parquet
+                                                      path_sdrf=path_sdrf, # C:\E\graduation\cluster\PXD004732\PXD004732.sdrf.tsv
+                                                      clu_map_dict=cluster_res_dict)  # {'Homo sapiens/Orbitrap Fusion Lumos/charge4/mgf files/PXD004732-consensus_1.mgf/1': 1}
 
     # 不同的肽段修饰(基于peptidoform)
     # pep_lst = df['peptidoform'].to_list()
@@ -133,8 +141,13 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
 
         # 转化为msp文件需要的格式
         for spectrum_df in [consensus_spectrum_df, single_spectrum_df]:
+            print("consensus_spectrum_df: ", consensus_spectrum_df)
+            print("single_spectrum_df: ", single_spectrum_df)
+
             spectrum_df.loc[:, 'msp_fmt'] = spectrum_df.apply(lambda row: MspUtil.get_msp_fmt(row), axis=1)
             MspUtil.write2msp(output, '\n\n'.join(spectrum_df['msp_fmt']))
     else:
         raise ValueError("Unknown strategy type, The current type can only be one of [best, most, bin, average]")
+
+
 
