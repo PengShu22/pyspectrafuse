@@ -1,5 +1,4 @@
 """Tests for parquet_utils module."""
-import pytest
 from pathlib import Path
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 
