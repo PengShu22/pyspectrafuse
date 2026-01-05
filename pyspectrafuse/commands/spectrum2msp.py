@@ -1,11 +1,17 @@
 import logging
+from os.path import split
+
 import click
+from pathlib import Path
 from pyspectrafuse.common.msp_utils import MspUtil
+from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 from pyspectrafuse.cluster_parquet_combine.combine_cluster_and_parquet import CombineCluster2Parquet
 from pyspectrafuse.consensus_strategy.average_spectrum_strategy import AverageSpectrumStrategy
 from pyspectrafuse.consensus_strategy.binning_strategy import BinningStrategy
 from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumStrategy
 from pyspectrafuse.consensus_strategy.most_similar_strategy import MostSimilarStrategy
+from pyspectrafuse.cluster_parquet_combine.cluster_res_handler import ClusterResHandler
+import uuid
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 REVISION = "0.1.1"
@@ -14,12 +20,20 @@ logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=log
 logger = logging.getLogger(__name__)
 
 
+def find_target_ext_files(directory: str, extensions: str) -> list:
+    path = Path(directory)
+    res = [str(file) for file in path.rglob(f'*{extensions}') if file.is_file() and 'psm' not in file.name]
+
+    return res
+
+
 @click.command("msp", short_help="get msp format file")
-@click.option('--path_parquet', help='parquet file path in the project')
-@click.option('--path_sdrf', help='sdrf file path for the project')
-@click.option('--path_cluster_tsv', help='Cluster result file of maracluster program (.tsv)')
-@click.option('--output', help='The output file path in msp format')
-@click.option('--strategy_type', default='best', help='Consensus Spectrum generation method')
+@click.option('--parquet_dir', help='The project directory, the directory must obtain parquet and sdrf files.')
+@click.option('--method_type', help='Consensus Spectrum generation method')
+@click.option('--cluster_tsv_file', help='the MaRaCluster output file')
+@click.option('--species', help='species name')
+@click.option('--instrument', help='instrument name')
+@click.option('--charge', help='charge name')
 @click.option('--sim', default='dot', help='The similarity measure method for the most consensus spectrum generation '
                                            'method')
 @click.option('--fragment_mz_tolerance', default=0.02,
@@ -40,29 +54,81 @@ logger = logging.getLogger(__name__)
 @click.option('--pepmass', type=click.Choice(['naive_average', 'neutral_average', 'lower_median']),
               default='lower_median')
 @click.option('--msms_avg', type=click.Choice(['naive', 'weighted']), default='weighted')
-def spectrum2msp(path_parquet, path_sdrf, path_cluster_tsv, strategy_type, output,
+def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument, charge,
                  sim='dot', fragment_mz_tolerance=0.02,  # most method params
                  min_mz=100., max_mz=2000., bin_size=0.02, peak_quorum=0.25, edge_case_threshold=0.5,  # bin
                  diff_thresh=0.01, dyn_range=1000, min_fraction=0.5, pepmass='lower_median', msms_avg='weighted'):
-    df = CombineCluster2Parquet().inject_cluster_info(path_parquet=path_parquet,
-                                                      path_sdrf=path_sdrf,
-                                                      path_cluster_tsv=path_cluster_tsv)
+    """
+    :param cluster_tsv_file:
+    :param charge:
+    :param instrument:
+    :param species:
+    :param parquet_dir: 项目dirname 
+    :param strategy_type: 共识谱生成方法类型
+    :param sim:
+    :param fragment_mz_tolerance:
+    :param min_mz:
+    :param max_mz:
+    :param bin_size:
+    :param peak_quorum:
+    :param edge_case_threshold:
+    :param diff_thresh:
+    :param dyn_range:
+    :param min_fraction:
+    :param pepmass:
+    :param msms_avg:
+    :return:
+    """
+    # print(f'tsv_file_path:{cluster_tsv_file}')
+    # print(species)
+    # print(instrument)
+    # print(charge)
+    split_type = ""
+    path_sdrf = find_target_ext_files(parquet_dir, '.sdrf.tsv')[0]  # sdrf 文件的地址
+    print("path_sdrf", path_sdrf)
+    path_parquet_lst = find_target_ext_files(parquet_dir, '.parquet')  # parquet_dir只是项目的地址, 这里返回所有的parquet文件
+    print("parquet path is",path_parquet_lst)
+
+    output_dir = Path(f'{parquet_dir}/msp/{species}/{instrument}/{charge}')  # 创建结果MSP目录
+    output_dir.mkdir(parents=True, exist_ok=True)
+    basename = ParquetPathHandler(parquet_dir).get_item_info()  # PXD008467
+    output = f"{output_dir}/{basename}_{uuid.uuid4()}.msp.txt"  # 一个项目对应一个msp格式文件
+
+    # 得到聚类结果文件，添加了物种仪器电荷信息，因为在nf中，在work目录中没有这个信息，找不到
+    cluster_res_dict = ClusterResHandler.get_cluster_dict(cluster_tsv_file, species, instrument, charge)
+    print("cluster_res_dict", cluster_res_dict)
+
+    # TODO: 根据电荷自动找parquet文件
+    # 如果parquet文件以电荷拆分，根据电荷查询对应的parquet文件，因为大文件下一个charge有多个parquet
+    if split_type == "charge":
+        path_parquet = [i for i in path_parquet_lst if i.split('-')[-1][0] == charge[-1]][0]
+    else:
+        path_parquet = path_parquet_lst
+
+    df = CombineCluster2Parquet().inject_cluster_info(path_parquet=path_parquet, # C:\\E\\graduation\\cluster\\PXD004732\\parquet_files\\PXD004732.parquet
+                                                      path_sdrf=path_sdrf, # C:\E\graduation\cluster\PXD004732\PXD004732.sdrf.tsv
+                                                      clu_map_dict=cluster_res_dict)  # {'Homo sapiens/Orbitrap Fusion Lumos/charge4/mgf files/PXD004732-consensus_1.mgf/1': 1}
+
+    # 不同的肽段修饰(基于peptidoform)
+    # pep_lst = df['peptidoform'].to_list()
+    # print(f"sequence num is {len(pep_lst)}")
+    # print(f"去重后的sequence num is {len(np.unique(pep_lst))}")
 
     consensus_strategy = None
-    if strategy_type == "best":
+    if method_type == "best":
         consensus_strategy = BestSpectrumStrategy()
 
-    elif strategy_type == "most":
+    elif method_type == "most":
         consensus_strategy = MostSimilarStrategy(sim=sim, fragment_mz_tolerance=fragment_mz_tolerance)
 
-    elif strategy_type == 'bin':
+    elif method_type == 'bin':
         consensus_strategy = BinningStrategy(min_mz=min_mz,
                                              max_mz=max_mz,
                                              bin_size=bin_size,
                                              peak_quorum=peak_quorum,
                                              edge_case_threshold=edge_case_threshold)
 
-    elif strategy_type == 'average':
+    elif method_type == 'average':
         consensus_strategy = AverageSpectrumStrategy(DIFF_THRESH=diff_thresh,
                                                      DYN_RANGE=dyn_range,
                                                      MIN_FRACTION=min_fraction,
@@ -70,28 +136,18 @@ def spectrum2msp(path_parquet, path_sdrf, path_cluster_tsv, strategy_type, outpu
                                                      msms_avg=msms_avg)
 
     if consensus_strategy:
-        consensus_spectrum_df, single_spectrum_df = consensus_strategy.consensus_spectrum_aggregation(df)  # 获得共识谱的df
+        consensus_spectrum_df, single_spectrum_df = consensus_strategy.consensus_spectrum_aggregation(
+            df)  # 获得共识谱的df
 
         # 转化为msp文件需要的格式
         for spectrum_df in [consensus_spectrum_df, single_spectrum_df]:
-            spectrum_df['msp_fmt'] = spectrum_df.apply(lambda row:
-                                                       MspUtil.get_msp_fmt(row, strategy_type=strategy_type), axis=1)
+            print("consensus_spectrum_df: ", consensus_spectrum_df)
+            print("single_spectrum_df: ", single_spectrum_df)
+
+            spectrum_df.loc[:, 'msp_fmt'] = spectrum_df.apply(lambda row: MspUtil.get_msp_fmt(row), axis=1)
             MspUtil.write2msp(output, '\n\n'.join(spectrum_df['msp_fmt']))
     else:
         raise ValueError("Unknown strategy type, The current type can only be one of [best, most, bin, average]")
 
 
-if __name__ == '__main__':
-    consensus_strategy_type = 'best'
-    msp_output = f'G:/graduation_project/generate-spectrum-library/PXD008467/msp_test/PXD008467_{consensus_strategy_type}_new.msp.txt'
-    parquet_file_path = r"G:\graduation_project\generate-spectrum-library\PXD008467\parquet_files\PXD008467-2.parquet"
-    sdrf_file_path = 'G:\\graduation_project\\generate-spectrum-library\\PXD008467\\PXD008467.sdrf.tsv'
-    res_file_path = 'G:\\graduation_project\\generate-spectrum-library\\PXD008467/mgf_output'
-    cluster_res_tsv = (r"G:\graduation_project\generate-spectrum-library\project_cluster\PXD008467\mgf_output\Homo "
-                       r"sapiens\Q Exactive\charge2\maracluster_output\MaRaCluster.clusters_p30.tsv")  # 聚类的结果tsv文件
 
-    spectrum2msp(path_parquet=parquet_file_path,
-                 path_sdrf=sdrf_file_path,
-                 path_cluster_tsv=cluster_res_tsv,
-                 strategy_type=consensus_strategy_type,
-                 output=msp_output)

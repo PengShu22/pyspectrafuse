@@ -45,7 +45,7 @@ with open("README.md", encoding="UTF-8") as fh:
 
 def read(rel_path):
     here = os.path.abspath(os.path.dirname(__file__))
-    with codecs.open(os.path.join(here, rel_path), "r") as fp:
+    with codecs.open(os.path.join(here, rel_path),encoding='utf-8') as fp:
         return fp.read()
 
 
@@ -77,7 +77,9 @@ setup(
         'numpy',
         'pandas',
         'pathlib',
-        'pyarrow'
+        'pyarrow',
+        'pyteomics',
+        'spectrum_utils'
     ],
     entry_points={
         "console_scripts": ['pyspectrafuse_cli = pyspectrafuse.pyspectrafuse_cli:main']

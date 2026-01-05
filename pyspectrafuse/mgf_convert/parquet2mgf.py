@@ -2,6 +2,7 @@ import time
 import pyarrow.parquet as pq
 import pandas as pd
 import numpy as np
+import ast
 from pathlib import Path
 from collections import defaultdict
 import logging
@@ -26,19 +27,18 @@ class Parquet2Mgf:
     def get_mz_intensity_str(mz_series, intensity_series) -> str:
         """
         Combine the m/z and intensity arrays into a single string
-        :param mz_series: m/z array
-        :param intensity_series: intensity array
+        :param mz_series: m/z array(string type)
+        :param intensity_series: intensity array(string type)
         :return: Combined string of m/z and intensity
         """
         if mz_series is None or intensity_series is None:
             return ""
 
-        # Ensure that both arrays are of the same length
-        if len(mz_series) != len(intensity_series):
-            raise ValueError("m/z and intensity series must be the same length")
+        # 一次性解析两个字符串为列表，避免重复解析
+        mz_list = ast.literal_eval(mz_series)
+        intensity_list = ast.literal_eval(intensity_series)
 
-        # Use a list comprehension to create a list of strings
-        combined_list = [f"{mz} {intensity}" for mz, intensity in zip(mz_series, intensity_series)]
+        combined_list = [f"{mz} {intensity}" for mz, intensity in zip(mz_list, intensity_list)]
 
         # Use the join method to concatenate the list of strings into a single string
         combined_str = '\n'.join(combined_list)
@@ -53,9 +53,7 @@ class Parquet2Mgf:
     @staticmethod
     def get_spectrum(row, dataset_id: str):
         res_str = (f"BEGIN IONS\n"  # begin
-                   f'TITLE=id=mzspec:{dataset_id}:'
-                   f'{row["reference_file_name"]}:'
-                   f'scan:{str(row["scan_number"])}:{row["sequence"]}/{row["charge"]}\n'  # usi
+                   f'TITLE=id={row["USI"]}\n'  # usi
                    f'PEPMASS={str(row["exp_mass_to_charge"])}\n'  # pepmass
                    f'CHARGE={str(row["charge"])}+\n'  # charge
                    f'{Parquet2Mgf.get_mz_intensity_str(row["mz_array"], row["intensity_array"])}\n'  # mz and intensity
@@ -63,6 +61,13 @@ class Parquet2Mgf:
                    )
 
         return res_str
+
+    @staticmethod
+    def get_filename_from_usi(row) -> str:
+        """
+        get filename from USI
+        """
+        return row['USI'].split(':')[2]
 
     def convert_to_mgf(self, parquet_path: str, sdrf_path: str, output_path: str, batch_size: int,
                        spectra_capacity: int) -> None:
@@ -96,7 +101,7 @@ class Parquet2Mgf:
             sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(sdrf_path)
 
             mgf_group_df['mgf_file_path'] = row_group.apply(
-                lambda row: '/'.join(sample_info_dict.get(row['reference_file_name']) +
+                lambda row: '/'.join(sample_info_dict.get(Parquet2Mgf.get_filename_from_usi(row)) +
                                      ['charge' + str(row["charge"]), 'mgf files']), axis=1)
 
             for group, group_df in mgf_group_df.groupby('mgf_file_path'):

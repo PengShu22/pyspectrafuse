@@ -16,6 +16,7 @@ class BestSpectrumStrategy(ConsensusStrategy):
         counts = self.get_cluster_counts(df)
         counts_dict = counts.to_dict()
         df['Nreps'] = df['cluster_accession'].apply(lambda x: counts_dict[x])
+        df['peptidoform'] = df['peptidoform'] + '/' + str(df['charge'].to_list()[0])
         # 非single簇的就只取posterior_error_probability最小的那一个谱为共识谱
         count_greater_than_2 = df[np.in1d(df['cluster_accession'], counts[counts > 1].index)]
         count_greater_than_2_groups = count_greater_than_2.groupby('cluster_accession')

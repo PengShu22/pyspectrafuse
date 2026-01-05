@@ -3,6 +3,7 @@ import itertools as it
 import numpy as np
 from pyspectrafuse.mgf_convert.parquet2mgf import Parquet2Mgf
 import logging
+import ast
 
 logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -36,13 +37,14 @@ class MspUtil:
 
     @staticmethod
     # 生成msp需要的字符串
-    def get_msp_fmt(row, strategy_type):
-        if strategy_type == 'most' or strategy_type == 'best':
-            name_val = row['usi'].split(':')[-1]
-        elif strategy_type == 'average' or strategy_type == 'bin':
-            name_val = name_val = ';'.join([i.split(':')[-1] for i in row['usi'].split(';')])
+    def get_msp_fmt(row):
+        # if strategy_type == 'most' or strategy_type == 'best':
+        #     name_val = row['usi'].split(':')[-1]
+        # elif strategy_type == 'average' or strategy_type == 'bin':
+        #     name_val = name_val = ';'.join([i.split(':')[-1] for i in row['usi'].split(';')])
+        name_val = row['peptidoform']
         mw_val = row['pepmass']
-        num_peaks_val = row['mz_array'].shape[0]
+        num_peaks_val = len(ast.literal_eval(row['mz_array']))
         comment_val = f'clusterID={MspUtil().usi_to_uuid(row["usi"])} Nreps={row["Nreps"]} PEP={row["posterior_error_probability"]}'
         mz_intensity_val = Parquet2Mgf.get_mz_intensity_str(row['mz_array'], row['intensity_array'])
 

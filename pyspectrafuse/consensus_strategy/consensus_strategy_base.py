@@ -54,6 +54,7 @@ class ConsensusStrategy:
         counts = self.get_cluster_counts(df)
         counts_dict = counts.to_dict()
         df['Nreps'] = df['cluster_accession'].apply(lambda x: counts_dict[x])
+        df['peptidoform'] = df['peptidoform'] + '/' + str(df['charge'].to_list()[0])
         count_greater_than_10 = df[
             np.in1d(df['cluster_accession'], counts[counts > 10].index)]
         count_greater_than_10_groups = count_greater_than_10.groupby('cluster_accession')

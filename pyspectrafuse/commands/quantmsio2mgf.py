@@ -15,7 +15,7 @@ logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=log
 logger = logging.getLogger(__name__)
 
 
-@click.command("convert", short_help="Convert parquet files to MGF format")
+@click.command("convert-mgf", short_help="Convert parquet files to MGF format")
 @click.option('--parquet_dir', '-p', help='The directory where the parquet files are located')
 # @click.option('--sdrf_file_path', '-s', help='The path to the sdrf file')
 # @click.option('--output_path', '-o', help='The output directory')
