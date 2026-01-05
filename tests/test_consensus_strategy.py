@@ -3,7 +3,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from pyspectrafuse.consensus_strategy.consensus_strategy_base import ConsensusStrategy
-from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumStrategy
+from pyspectrafuse.consensus_strategy.best_spectrum_strategy import BestSpectrumStrategy
 from pyspectrafuse.consensus_strategy.average_spectrum_strategy import AverageSpectrumStrategy
 
 
