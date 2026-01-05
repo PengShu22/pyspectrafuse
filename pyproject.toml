@@ -36,9 +36,10 @@ Repository = "https://github.com/bigbio/pyspectrafuse"
 pyspectrafuse_cli = "pyspectrafuse.pyspectrafuse_cli:main"
 
 [tool.setuptools]
-packages = ["pyspectrafuse"]
 include-package-data = true
 
+[tool.setuptools.packages.find]
+include = ["pyspectrafuse*"]
 [tool.setuptools.package-data]
 "*" = ["*.xml"]
 
