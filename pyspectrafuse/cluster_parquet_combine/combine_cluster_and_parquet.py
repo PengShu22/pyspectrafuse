@@ -96,8 +96,8 @@ class CombineCluster2Parquet:
                                  f"{file_index_dict[base_mgf_path] + 1}.mgf")      # 'Homo sapiens/Orbitrap Fusion Lumos/charge4/mgf files/PXD004732-consensus_1.mgf/1': 1
 
                 if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
-                    mgf_order_range = range(write_count_dict[group]+1,
-                                            write_count_dict[group] + group_df.shape[0]+1,
+                    mgf_order_range = range(write_count_dict[group],
+                                            write_count_dict[group] + group_df.shape[0],
                                             1)
 
                     # 把所有的合并完的信息的df加入到列表当中
