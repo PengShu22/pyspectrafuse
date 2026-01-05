@@ -1,5 +1,4 @@
 """Tests for msp_utils module."""
-import pytest
 import ast
 from pathlib import Path
 from pyspectrafuse.common.msp_utils import MspUtil
