@@ -117,10 +117,13 @@ class Parquet2Mgf:
                 lambda row: '/'.join(sample_info_dict.get(Parquet2Mgf.get_filename_from_usi(row)) +
                                      ['charge' + str(row["charge"]), 'mgf files']), axis=1)
 
+            # Pre-compute basename to avoid repeated string operations
+            basename_parquet = Path(parquet_path).parts[-1].split('.')[0]
+            
             for group, group_df in mgf_group_df.groupby('mgf_file_path'):
                 base_mgf_path = f"{output_path}/{group}"
-                mgf_file_path = (f"{base_mgf_path}/{Path(parquet_path).parts[-1].split('.')[0]}_"
-                                 f"{relation_dict[base_mgf_path] + 1}.mgf")
+                file_index = relation_dict[base_mgf_path] + 1
+                mgf_file_path = f"{base_mgf_path}/{basename_parquet}_{file_index}.mgf"
                 Path(mgf_file_path).parent.mkdir(parents=True, exist_ok=True)
 
                 if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
@@ -137,8 +140,8 @@ class Parquet2Mgf:
                     relation_dict[base_mgf_path] += 1
                     write_count_dict[group] = 0
 
-                    mgf_file_path = (f"{base_mgf_path}/{Path(parquet_path).parts[-1].split('.')[0]}_"
-                                     f"{relation_dict[base_mgf_path] + 1}.mgf")
+                    file_index = relation_dict[base_mgf_path] + 1
+                    mgf_file_path = f"{base_mgf_path}/{basename_parquet}_{file_index}.mgf"
                     group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
                     Parquet2Mgf.write2mgf(mgf_file_path, '\n\n'.join(group_df_tail["spectrum"]))
                     write_count_dict[group] += group_df_tail.shape[0]

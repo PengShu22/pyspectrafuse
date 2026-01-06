@@ -37,9 +37,9 @@ class ClusterResHandler:
                     df = self.read_cluster_tsv(str(charge_tsv))
                     sample_info = str(Path(*charge_tsv.parts[-4:-1])).replace("\\", "/")
                     # For a cluster result file, add [species/instrument/charge information]
-                    df.loc[:, "mgf_path"] = df.loc[:, "mgf_path"].apply(
-                        lambda x: f"{sample_info}/mgf files/{x}")
-                    df['mgf_path'] = df.apply(lambda row: f"{row['mgf_path']}/{row['index']}", axis=1)
+                    # Vectorized string operations - much faster than apply()
+                    df.loc[:, "mgf_path"] = f"{sample_info}/mgf files/" + df["mgf_path"]
+                    df['mgf_path'] = df['mgf_path'] + '/' + df['index'].astype(str)
                     charge_df_lst.append(df)
 
                 charge_df = pd.DataFrame(np.vstack(charge_df_lst), 
@@ -115,9 +115,9 @@ class ClusterResHandler:
         clu_df.dropna(axis=0, inplace=True)  # Remove empty rows
 
         sample_info = f"{species}/{instrument}/{charge}"
-        clu_df.loc[:, "mgf_path"] = clu_df.loc[:, "mgf_path"].apply(
-            lambda x: sample_info + "/mgf files/" + x)
-        clu_df['mgf_path'] = clu_df.apply(lambda row: f"{row['mgf_path']}/{row['index']}", axis=1)
+        # Vectorized string operations - much faster than apply()
+        clu_df.loc[:, "mgf_path"] = sample_info + "/mgf files/" + clu_df["mgf_path"]
+        clu_df['mgf_path'] = clu_df['mgf_path'] + '/' + clu_df['index'].astype(str)
         clu_df = clu_df.loc[:, ['mgf_path', 'cluster_accession']]
         mgf_ind_clu_acc_dict = pd.Series(clu_df.cluster_accession.values, index=clu_df.mgf_path).to_dict()
 

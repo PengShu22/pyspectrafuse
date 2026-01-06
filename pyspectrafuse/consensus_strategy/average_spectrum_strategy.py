@@ -88,10 +88,6 @@ class AverageSpectrumStrategy(ConsensusStrategy):
             self.get_average_spectrum, include_groups=False)
 
         return res, single_spectrum_df
-        merge_median_and_top, single_spectrum_df = self.classify_cluster_group(cluster_df, filter_metrics)
-        merge_median_and_top['ms2spectrumDict'] = merge_median_and_top.apply(lambda row: self.get_Ms2SpectrumDict(row),
-                                                                             axis=1)
-        res = merge_median_and_top.groupby('cluster_accession').apply(self.get_average_spectrum, include_groups=False)
 
         return res, single_spectrum_df
 

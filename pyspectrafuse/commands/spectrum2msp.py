@@ -204,6 +204,8 @@ def spectrum2msp(parquet_dir: str, method_type: str, cluster_tsv_file: str,
 
     # Write spectra to MSP file
     write_spectra_to_msp(consensus_spectrum_df, single_spectrum_df, str(output))
+    
+    logger.info(f"MSP file generated successfully: {output}")
 
 
 

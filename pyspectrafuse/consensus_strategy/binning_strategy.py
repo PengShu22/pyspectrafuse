@@ -95,14 +95,19 @@ class BinningStrategy(ConsensusStrategy):
         n_peaks = np.zeros(num_bins, dtype=np.uint32)
         precursor_mzs, precursor_charges = [], []
 
+        # Pre-compute min_mz_div_bin_size for faster bin calculation
+        min_mz_div_bin_size = self.min_mz / self.bin_size
+        
         for spectrum in cluster_spectra.values():
             spectrum = copy.copy(spectrum).set_mz_range(self.min_mz, self.max_mz)
-            bin_array = np.floor((spectrum.mz - self.min_mz) / self.bin_size).astype(np.uint32)
+            # Optimized bin calculation: (mz - min_mz) / bin_size = mz/bin_size - min_mz/bin_size
+            bin_array = np.floor(spectrum.mz / self.bin_size - min_mz_div_bin_size).astype(np.uint32)
             # Ensure bin indices are within bounds
             valid_bins = bin_array < num_bins
-            n_peaks[bin_array[valid_bins]] += 1
-            intensities[bin_array[valid_bins]] += spectrum.intensity[valid_bins]
-            mzs[bin_array[valid_bins]] += spectrum.mz[valid_bins]
+            valid_indices = bin_array[valid_bins]
+            n_peaks[valid_indices] += 1
+            intensities[valid_indices] += spectrum.intensity[valid_bins]
+            mzs[valid_indices] += spectrum.mz[valid_bins]
             precursor_mzs.append(spectrum.precursor_mz)
             precursor_charges.append(spectrum.precursor_charge)
 
@@ -145,73 +150,4 @@ class BinningStrategy(ConsensusStrategy):
                               'usi', 'charge', 'mz_array', 'intensity_array']
         return pd.Series([precursor_mz, Nreps, posterior_error_probability, peptidoform, 
                          usi, precursor_charge, mzs, intensities],
-                         index=new_spectrum_index)
-        Nreps = single_group['Nreps'].to_list()[0]
-        posterior_error_probability = np.min(single_group['posterior_error_probability'])
-        usi = ';'.join(single_group['usi'])
-
-        # Create a dictionary for a cluster, key is usi, value is sus.MsmsSpectrum object
-        cluster_spectra = single_group.set_index('usi')['ms2spectrumObj'].to_dict()
-        spectra_keys = list(cluster_spectra.keys())
-
-        num_bins = math.ceil((self.max_mz - self.min_mz) / self.bin_size)
-        mzs = np.zeros(num_bins, dtype=np.float32)
-        intensities = np.zeros(num_bins, dtype=np.float32)
-        n_peaks = np.zeros(num_bins, dtype=np.uint32)
-        precursor_mzs, precursor_charges = [], []
-
-        for spectrum in cluster_spectra.values():
-            spectrum = copy.copy(spectrum).set_mz_range(
-                self.min_mz, self.max_mz)
-            bin_array = np.floor((spectrum.mz - self.min_mz)
-                                 / self.bin_size).astype(np.uint32)
-            n_peaks[bin_array] += 1
-            intensities[bin_array] += spectrum.intensity
-            mzs[bin_array] += spectrum.mz
-            precursor_mzs.append(spectrum.precursor_mz)
-            precursor_charges.append(spectrum.precursor_charge)
-
-        # # Verify that all precursor charges are the same.
-        # if not all(charge == precursor_charges[0]
-        #            for charge in precursor_charges):
-        #     raise ValueError('Spectra in a cluster have different precursor '
-        #                      'charges')
-        # Try to handle the case where a single peak is split on a bin
-        # boundary.
-        mz_temp = np.copy(mzs)
-        mz_temp_mask = n_peaks > 0
-        mz_temp[mz_temp_mask] /= n_peaks[mz_temp_mask]
-        # Subtract the mzs from their previous mz.
-        mz_delta = np.diff(mz_temp)
-        mz_delta[-1] = 0
-        # Handle cases where the deltas are smaller than the thresholded bin
-        # size.
-        mz_delta_small_index = np.nonzero(
-            (mz_delta > 0) &
-            (mz_delta < self.bin_size * self.edge_case_threshold))[0]
-        if len(mz_delta_small_index) > 0:
-            # Consolidate all the split mzs, intensities, n_peaks into one bin.
-            mzs[mz_delta_small_index] += mzs[mz_delta_small_index + 1]
-            mzs[mz_delta_small_index + 1] = 0
-            intensities[mz_delta_small_index] += \
-                intensities[mz_delta_small_index + 1]
-            intensities[mz_delta_small_index + 1] = 0
-            n_peaks[mz_delta_small_index] += n_peaks[mz_delta_small_index + 1]
-            n_peaks[mz_delta_small_index + 1] = 0
-
-        # Determine how many peaks need to be present to keep a final peak.
-        peak_quorum_int = math.ceil(len(cluster_spectra) * self.peak_quorum)
-        mask = n_peaks >= peak_quorum_int
-        # Take the mean of all peaks per bin.
-        mzs = mzs[mask] / n_peaks[mask]
-        intensities = intensities[mask] / n_peaks[mask]
-        precursor_mz = np.mean(precursor_mzs)
-        precursor_charge = precursor_charges[0]
-
-        peptidoform = '; '.join(np.unique(single_group['peptidoform']))
-
-        new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
-                              'usi', 'charge', 'mz_array', 'intensity_array']
-        # Return information for the newly generated consensus spectrum
-        return pd.Series([precursor_mz, Nreps, posterior_error_probability, peptidoform, usi, precursor_charge, mzs, intensities],
                          index=new_spectrum_index)

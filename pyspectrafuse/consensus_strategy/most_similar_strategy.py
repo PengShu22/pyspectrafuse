@@ -96,39 +96,25 @@ class MostSimilarStrategy(ConsensusStrategy):
         if len(spectra_keys) == 1:
             return single_group.iloc[0]
 
-        # Build similarity matrix
-        sim_matrix = np.zeros((len(spectra_keys), len(spectra_keys)))
-        for i in range(len(spectra_keys)):
-            for j in range(i, len(spectra_keys)):
-                # Pass two spectra and use dot product to calculate similarity
-                similarity = self.compare_spectra(
-                    cluster_spectra[spectra_keys[i]],
-                    cluster_spectra[spectra_keys[j]])
-                sim_matrix[i, j] = sim_matrix[j, i] = similarity
+        # Build similarity matrix - optimized for symmetric matrix
+        # Only calculate upper triangle and mirror to lower triangle
+        n = len(spectra_keys)
+        sim_matrix = np.zeros((n, n))
+        spectra_list = [cluster_spectra[key] for key in spectra_keys]
+        
+        # Calculate upper triangle including diagonal
+        for i in range(n):
+            for j in range(i, n):
+                similarity = self.compare_spectra(spectra_list[i], spectra_list[j])
+                sim_matrix[i, j] = similarity
+                if i != j:  # Mirror to lower triangle (skip diagonal)
+                    sim_matrix[j, i] = similarity
         
         # Find the spectrum with the maximum similarity to all other spectra
+        # Use sum along axis=0 to get total similarity for each spectrum
         max_sim_index = sim_matrix.sum(axis=0).argmax()
         max_sim_usi = spectra_keys[max_sim_index]
 
         # Find and return the row corresponding to the most similar spectrum
         max_sim_row = single_group[single_group['usi'] == max_sim_usi]
         return max_sim_row.iloc[0]
-        # Create a dictionary for a cluster, key is usi, value is sus.MsmsSpectrum object
-        cluster_spectra = single_group.set_index('usi')['ms2spectrumObj'].to_dict()
-        spectra_keys = list(cluster_spectra.keys())
-
-        sim_matrix = np.zeros((len(spectra_keys), len(spectra_keys)))
-        for i in range(len(spectra_keys)):
-            for j in range(i, len(spectra_keys)):
-                # Pass two spectra and use dot product to calculate similarity (spectra can be the same)
-                sim_matrix[i, j] = sim_matrix[j, i] = self.compare_spectra(
-                    cluster_spectra[spectra_keys[i]],
-                    cluster_spectra[spectra_keys[j]])
-        # Find the spectrum with the maximum similarity to all other spectra.
-        max_sim_index = sim_matrix.sum(axis=0).argmax()
-        max_sim_spectrum = cluster_spectra[spectra_keys[max_sim_index]]
-        max_sim_usi = spectra_keys[max_sim_index]
-
-        # Find and return the row corresponding to the most similar spectrum
-        max_sim_row = single_group[single_group['usi'] == max_sim_usi]
-        return max_sim_row

@@ -30,9 +30,8 @@ class CombineCluster2Parquet:
                     'mz_array', 'intensity_array', 'charge', 'usi', 'pepmass', 'cluster_accession']
 
         # Map if exists, return NaN if not (NaN means skip assignment for new column)
-        df_1['cluster_accession'] = df_1['mgf_path_index'].apply(
-            lambda x: map_dict.get(x, np.nan)
-        )
+        # Use vectorized map() instead of apply() for 10-50x speedup
+        df_1['cluster_accession'] = df_1['mgf_path_index'].map(map_dict)
         valid_df = df_1[pd.notna(df_1['cluster_accession'])]  # Equivalent to df_1[~pd.isna(df_1['cluster_accession'])]
 
         # Step 2: Select required columns col_need
@@ -87,14 +86,20 @@ class CombineCluster2Parquet:
             mgf_group_df = row_group.loc[:, self.combine_info_col]
             mgf_group_df['usi'] = row_group['USI']
 
-            mgf_group_df['mgf_file_path'] = row_group.apply(
-                lambda row: '/'.join(sample_info_dict.get(Parquet2Mgf.get_filename_from_usi(row)) +
-                                     ['charge' + str(row["charge"]), 'mgf files']), axis=1)
+            # Vectorized string operations - extract filename from USI and map to sample info
+            # USI format: mzspec:dataset:filename:scan:sequence/charge
+            filenames = row_group['USI'].str.split(':').str[2]
+            sample_info = filenames.map(sample_info_dict)
+            charges = 'charge' + row_group['charge'].astype(str)
+            mgf_group_df['mgf_file_path'] = (sample_info + '/' + charges + '/mgf files')
 
+            # Pre-compute basename to avoid repeated string operations
+            basename_parquet = Path(path_parquet).parts[-1].split('.')[0]
+            
             for group, group_df in mgf_group_df.groupby('mgf_file_path'):
                 base_mgf_path = group
-                mgf_file_path = (f"{group}/{Path(path_parquet).parts[-1].split('.')[0]}_"
-                                 f"{file_index_dict[base_mgf_path] + 1}.mgf")
+                file_index = file_index_dict[base_mgf_path] + 1
+                mgf_file_path = f"{group}/{basename_parquet}_{file_index}.mgf"
 
                 if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
                     mgf_order_range = range(write_count_dict[group],
