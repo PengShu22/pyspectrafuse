@@ -11,7 +11,7 @@ class TestCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ['--help'])
         assert result.exit_code == 0
-        assert 'xzx' in result.output or 'pyspectrafuse' in result.output.lower()
+        assert 'pyspectrafuse' in result.output.lower()
 
     def test_cli_version(self):
         """Test CLI version command."""
