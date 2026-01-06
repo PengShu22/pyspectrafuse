@@ -1,0 +1,135 @@
+name: pyspectrafuse Containers Build and Sync
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+    paths:
+      - 'Dockerfile'
+      - '.github/workflows/**'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      push_images:
+        description: 'Push images to registry'
+        required: false
+        default: true
+        type: 'boolean'
+      push_release:
+        description: 'Push as release version'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-pyspectrafuse:
+    name: Build and Push pyspectrafuse Docker Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      RETRY_TIMES: 3
+      RETRY_DELAY: 30
+      SINGULARITY_TMPDIR: /tmp/singularity-tmp
+      SINGULARITY_CACHEDIR: /tmp/singularity-cache
+      SINGULARITY_LIBRARYDIR: /tmp/singularity-lib
+
+    steps:
+    - name: Free up disk space before build
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        docker system prune -af || true
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GHCR_TOKEN }}
+
+    - name: Extract version from pyproject.toml
+      id: version
+      run: |
+        VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        echo "Extracted version: $VERSION"
+        # Extract major and minor version
+        MAJOR=$(echo $VERSION | cut -d'.' -f1)
+        MINOR=$(echo $VERSION | cut -d'.' -f2)
+        echo "MAJOR=$MAJOR" >> $GITHUB_OUTPUT
+        echo "MINOR=$MINOR" >> $GITHUB_OUTPUT
+        echo "Major.Minor: $MAJOR.$MINOR"
+
+    - name: Build and Push pyspectrafuse image
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
+      with:
+        context: .
+        push: ${{ (github.event.inputs.push_images == true || github.event.inputs.push_images == '') && (github.event_name != 'pull_request') }}
+        tags: |
+          ghcr.io/bigbio/pyspectrafuse:latest
+          ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=min
+        build-args: |
+          BUILDKIT_INLINE_CACHE=1
+        provenance: false
+        # Note: Only building for linux/amd64
+        platforms: linux/amd64
+
+    - name: Free up disk space after build
+      run: |
+        docker image rm ghcr.io/bigbio/pyspectrafuse:latest || true
+        docker system prune -af || true
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+
+    - name: Set up Singularity
+      if: ${{ (github.event.inputs.push_images == true || github.event.inputs.push_images == '') && (github.event_name != 'pull_request') }}
+      uses: eWaterCycle/setup-singularity@931d4e31109e875b13309ae1d07c70ca8fbc8537
+      with:
+        singularity-version: 3.8.7
+
+    - name: Prepare Singularity temp dir
+      if: ${{ (github.event.inputs.push_images == true || github.event.inputs.push_images == '') && (github.event_name != 'pull_request') }}
+      run: mkdir -p /tmp/singularity-tmp /tmp/singularity-cache /tmp/singularity-lib
+
+    - name: Convert Docker image to Singularity
+      if: ${{ (github.event.inputs.push_images == true || github.event.inputs.push_images == '') && (github.event_name != 'pull_request') }}
+      run: |
+        singularity build --disable-cache pyspectrafuse.sif docker://ghcr.io/bigbio/pyspectrafuse:latest
+        ls -la pyspectrafuse.sif
+
+    - name: Login and Deploy Container
+      if: (github.event_name != 'pull_request')
+      env:
+        IS_RELEASE: ${{ github.event_name == 'release' }}
+        IS_MASTER: ${{ github.ref == 'refs/heads/master' && github.event_name == 'push' }}
+      run: |
+        echo ${{ secrets.GHCR_TOKEN }} | singularity remote login -u ${{ secrets.GHCR_USERNAME }} --password-stdin oras://ghcr.io
+        singularity push pyspectrafuse.sif oras://ghcr.io/bigbio/pyspectrafuse-sif:${{ steps.version.outputs.VERSION }}
+        if [[ "${{ env.IS_RELEASE }}" == "true" || "${{ env.IS_MASTER }}" == "true" ]]; then
+          singularity push pyspectrafuse.sif oras://ghcr.io/bigbio/pyspectrafuse-sif:latest
+        fi
+
+    - name: Notify on success
+      if: success()
+      run: |
+        echo "::notice::Successfully built and pushed pyspectrafuse Docker and Singularity images to ghcr.io/bigbio"
+
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "::error::Failed to build or push pyspectrafuse images. Check the logs for details."
+

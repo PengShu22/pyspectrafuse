@@ -50,7 +50,8 @@ class SdrfUtil:
         # print(sdrf_feature_df.head())
         # print(sdrf_feature_df.columns.tolist())
 
-        sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].apply(lambda x: x.split('.')[0])
+        # Vectorized string operation - much faster than apply()
+        sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].str.split('.').str[0]
         
         def extract_instrument(x):
             """Extract instrument name from comment[instrument] field."""
@@ -67,8 +68,9 @@ class SdrfUtil:
         
         sdrf_feature_df['comment[instrument]'] = sdrf_feature_df['comment[instrument]'].apply(extract_instrument)
 
+        # Vectorized operation - convert to list of lists
         sdrf_feature_df['organism_instrument'] = sdrf_feature_df[
-            ['Characteristics[organism]', 'comment[instrument]']].apply(lambda x: list(x), axis=1)
+            ['Characteristics[organism]', 'comment[instrument]']].values.tolist()
         sample_info_dict = sdrf_feature_df.set_index('comment[data file]')['organism_instrument'].to_dict()
         return sample_info_dict
 
