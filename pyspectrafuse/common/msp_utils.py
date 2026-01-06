@@ -36,8 +36,8 @@ class MspUtil:
         return msp_dict
 
     @staticmethod
-    # 生成msp需要的字符串
     def get_msp_fmt(row):
+        """Generate MSP format string from row data."""
         # if strategy_type == 'most' or strategy_type == 'best':
         #     name_val = row['usi'].split(':')[-1]
         # elif strategy_type == 'average' or strategy_type == 'bin':
@@ -59,7 +59,7 @@ class MspUtil:
     @staticmethod
     def write2msp(target_path: str, write_content: str):
         with open(target_path, mode='a') as f:
-            logger.info(f'正在向文件为: {target_path}写入msp格式的spectrum')
+            logger.info(f'Writing MSP format spectrum to file: {target_path}')
             f.write(write_content)
 
 

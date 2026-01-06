@@ -11,7 +11,7 @@ class ClusterResHandler:
         self.project_dir = dirname
 
     def walk_dir(self):
-        # 根据电荷信息对找到的文件进行分组，并将具有相同电荷的聚类结果文件放入同一个列表中：
+        # Group found files by charge information and put cluster result files with the same charge into the same list
         charge_groups = self.get_charge_group()
         charge_cluster_res_groups = {}
         if charge_groups:
@@ -22,7 +22,8 @@ class ClusterResHandler:
                     df = self.read_cluster_tsv(charge_tsv)
                     sample_info = str(Path(*charge_tsv.parts[-4:-1])).replace("\\",
                                                                               "/")  # ('Homo sapiens', 'Q Exactive', 'charge2')
-                    # 对于一个聚类结果文件，补上其[物种/仪器/电荷信息], 最终同个电荷的只对应一个parquet,parquet按照电荷切分
+                    # For a cluster result file, add [species/instrument/charge information],
+                    # ultimately one charge corresponds to one parquet, parquet is split by charge
                     df.loc[:, "mgf_path"] = df.loc[:, "mgf_path"].apply(
                         lambda x: sample_info + "/mgf files/" + x)
                     df['mgf_path'] = df.apply(lambda row: f"{row['mgf_path']}/{row['index']}", axis=1)
@@ -38,17 +39,17 @@ class ClusterResHandler:
 
     def get_charge_group(self):
         """
-        # 根据电荷信息对找到的文件进行分组，并将具有相同电荷的聚类结果文件放入同一个列表中：
+        Group found files by charge information and put cluster result files with the same charge into the same list.
         :return:
         """
         charge_groups = {}
         for file_path in Path(self.project_dir).rglob('charge*'):
             print(f"file_path: {file_path}")
             for charge_file in file_path.rglob("*"):
-                # 检查是否为文件并且匹配正则表达式
+                # Check if it's a file and matches the regular expression
                 pattern = self.get_pattern()
                 if charge_file.is_file() and pattern.search(charge_file.name):
-                    print(f'找到文件: {charge_file}')
+                    print(f'Found file: {charge_file}')
                     charge = charge_file.parent.name
                     if charge not in charge_groups:
                         charge_groups[charge] = []
@@ -71,7 +72,7 @@ class ClusterResHandler:
         """
         clu_df = pd.read_csv(tsv_file_path, sep='\t', header=None)
         clu_df.columns = ['mgf_path', 'index', 'cluster_accession']
-        clu_df.dropna(axis=0, inplace=True)  # 删除空行
+        clu_df.dropna(axis=0, inplace=True)  # Remove empty rows
 
         sample_info = f"{species}/{instrument}/{charge}"
         clu_df.loc[:, "mgf_path"] = clu_df.loc[:, "mgf_path"].apply(

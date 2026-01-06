@@ -65,32 +65,6 @@ class AverageSpectrumStrategy(ConsensusStrategy):
         out : average spectrum in pyteomics format
 
 
-                生成一个聚类中的平均频谱。
-
-            参数
-            ----------
-            spectra:可迭代的
-            光谱的可迭代对象，每个光谱期望为pyteomics格式。
-            Title: str，可选
-            输出频谱的标题
-            Mz_accuracy:浮点数，仅限关键字，可选
-            m/z精度用于MS/MS聚类。默认值是`DIFF_THRESH`
-            Dyn_range:浮点数，仅限关键字，可选
-            应用于输出的动态范围(峰值小于max_intensity / dyn_range
-            被丢弃)
-            Msms_avg: {'naive'， 'weighted'}
-            代表光谱中MS/MS峰值m/z值的计算方法。
-            Naive: MS/MS级别集群内峰值m/z的简单平均值。
-            加权:以MS/MS峰值强度为权重的加权平均。
-            Min_fraction，浮点数，仅限关键字，可选
-            簇谱的最小部分需要包含峰。
-
-            返回
-            -------
-            输出:pyteomics格式的平均光谱
-            :param usi:
-            :param pep:
-            :param Nreps:
         '''
         mz_accuracy = self.kwargs.get('mz_accuracy', self.DIFF_THRESH)
         dyn_range = self.kwargs.get('dyn_range', self.DYN_RANGE)
@@ -169,7 +143,7 @@ class AverageSpectrumStrategy(ConsensusStrategy):
 
         new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
                               'usi', 'charge', 'mz_array', 'intensity_array']
-        # 返回生成的新的共识谱的信息
+        # Return information for the newly generated consensus spectrum
         return pd.Series([pepmass, Nreps, pep, peptidoform, usi, charge, new_mz_array, new_intensity_array],
                          index=new_spectrum_index)
 

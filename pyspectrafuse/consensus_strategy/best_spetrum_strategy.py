@@ -17,14 +17,14 @@ class BestSpectrumStrategy(ConsensusStrategy):
         counts_dict = counts.to_dict()
         df['Nreps'] = df['cluster_accession'].apply(lambda x: counts_dict[x])
         df['peptidoform'] = df['peptidoform'] + '/' + str(df['charge'].to_list()[0])
-        # 非single簇的就只取posterior_error_probability最小的那一个谱为共识谱
+        # For non-single clusters, select the spectrum with the smallest posterior_error_probability as consensus
         count_greater_than_2 = df[np.in1d(df['cluster_accession'], counts[counts > 1].index)]
         count_greater_than_2_groups = count_greater_than_2.groupby('cluster_accession')
-        # posterior_error_probability最小的
+        # Select spectrum with minimum posterior_error_probability
         best_spectrum_group = count_greater_than_2_groups.apply(self.top_n_rows, column=filter_metrics,
                                                                 n=1)
 
-        best_spectrum_df = best_spectrum_group.reset_index(drop=True)  # 生成的共识谱
+        best_spectrum_df = best_spectrum_group.reset_index(drop=True)  # Generated consensus spectrum
 
         single_spectrum_df = df[
             np.in1d(df['cluster_accession'], counts[counts == 1].index)]  # spectrum number equal 1

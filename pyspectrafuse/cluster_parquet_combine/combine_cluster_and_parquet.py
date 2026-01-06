@@ -28,13 +28,13 @@ class CombineCluster2Parquet:
         col_need = ['posterior_error_probability', 'global_qvalue', 'peptidoform',
                     'mz_array', 'intensity_array', 'charge', 'usi', 'pepmass', 'cluster_accession']
 
-        # 存在则映射，不存在则返回NaN（新建列场景下，NaN即表示跳过赋值）
+        # Map if exists, return NaN if not (NaN means skip assignment for new column)
         df_1['cluster_accession'] = df_1['mgf_path_index'].apply(
             lambda x: map_dict.get(x, np.nan)
         )
-        valid_df = df_1[pd.notna(df_1['cluster_accession'])]  # 等价于 df_1[~pd.isna(df_1['cluster_accession'])]
+        valid_df = df_1[pd.notna(df_1['cluster_accession'])]  # Equivalent to df_1[~pd.isna(df_1['cluster_accession'])]
 
-        # 步骤2：选取需要的列col_need
+        # Step 2: Select required columns col_need
         result_df = valid_df.loc[:, col_need]
 
         return result_df
@@ -48,7 +48,7 @@ class CombineCluster2Parquet:
         """
         clu_df = pd.read_csv(tsv_file_path, sep='\t', header=None)
         clu_df.columns = ['mgf_path', 'index', 'cluster_accession']
-        clu_df.dropna(axis=0, inplace=True)  # 删除空行
+        clu_df.dropna(axis=0, inplace=True)  # Remove empty rows
         return clu_df
 
     def inject_cluster_info(self, path_parquet, clu_map_dict, path_sdrf, spectra_num=1000000, batch_size=200000):
@@ -62,7 +62,8 @@ class CombineCluster2Parquet:
         cluster_res_lst = []
 
         sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(path_sdrf)
-        # TODO: 这里后面的结果文件应该要修改为增加他的一个分类情况路径在聚类结果文件当中，这个部分应该在NextFlow里面解决，这里只是为了方便调试
+        # TODO: The result file path should be modified to include classification path in the cluster result file.
+        # This should be handled in NextFlow, this is just for debugging convenience
         # cluster_res_df.loc[:, "mgf_path"] = cluster_res_df.loc[:, "mgf_path"].apply(lambda x: 'Homo sapiens/Q '
         #                                                                                       'Exactive/charge3/mgf '
         #                                                                                       'files/' + x)
@@ -100,14 +101,14 @@ class CombineCluster2Parquet:
                                             write_count_dict[group] + group_df.shape[0],
                                             1)
 
-                    # 把所有的合并完的信息的df加入到列表当中
+                    # Add all merged dataframes to the list
                     cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
                                                                   mgf_order_range)
                     cluster_res_lst.append(cluster_res_df)
 
                     write_count_dict[group] += group_df.shape[0]
                 else:
-                    remain_num = SPECTRA_NUM - write_count_dict[group]  # 一个mgf文件剩余的容量
+                    remain_num = SPECTRA_NUM - write_count_dict[group]  # Remaining capacity of one MGF file
                     if remain_num > 0:
                         group_df_remain = group_df.head(remain_num)
                         mgf_order_range = range(write_count_dict[group],

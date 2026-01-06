@@ -20,7 +20,7 @@ class Parquet2Mgf:
     @staticmethod
     def write2mgf(target_path: str, write_content: str):
         with open(target_path, 'a') as f:
-            logger.info(f"正在向mgf路径为: {target_path}写入spectrum")
+            logger.info(f"Writing spectrum to MGF file at path: {target_path}")
             f.write(write_content)
 
     @staticmethod
@@ -34,7 +34,7 @@ class Parquet2Mgf:
         if mz_series is None or intensity_series is None:
             return ""
 
-        # 一次性解析两个字符串为列表，避免重复解析
+        # Parse both strings to lists at once to avoid repeated parsing
         mz_list = ast.literal_eval(mz_series)
         intensity_list = ast.literal_eval(intensity_series)
 

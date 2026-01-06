@@ -40,16 +40,16 @@ def quantmsio2mgf(parquet_dir: str, batch_size: int = 100000, spectra_capacity: 
 
     pool = Pool(processes=os.cpu_count())  # os.cpu_count()
 
-    # 将所有必需的参数打包成一个元组列表
+    # Pack all required parameters into a list of tuples
     tasks = [(parquet_file_path, sdrf_file_path, res_file_path, batch_size, spectra_capacity) for parquet_file_path
              in
              parquet_file_path_lst]
 
-    # 使用 pool.imap 来并行执行任务，并指定最大并行任务数
+    # Use pool.imap to execute tasks in parallel with specified maximum parallel tasks
     for _ in pool.imap(Parquet2Mgf().convert_to_mgf_task, tasks, chunksize=task_parallel):
         pass
 
-    # 关闭进程池并等待所有进程完成
+    # Close the process pool and wait for all processes to complete
     pool.close()
     pool.join()
 

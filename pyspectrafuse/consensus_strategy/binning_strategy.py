@@ -27,7 +27,7 @@ class BinningStrategy(ConsensusStrategy):
         posterior_error_probability = np.min(single_group['posterior_error_probability'])
         usi = ';'.join(single_group['usi'])
 
-        # 内部应该为一个簇生成一个字典，key为usi， value为sus.MsmsSpectrum对象
+        # Create a dictionary for a cluster, key is usi, value is sus.MsmsSpectrum object
         cluster_spectra = single_group.set_index('usi')['ms2spectrumObj'].to_dict()
         spectra_keys = list(cluster_spectra.keys())
 
@@ -89,6 +89,6 @@ class BinningStrategy(ConsensusStrategy):
 
         new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
                               'usi', 'charge', 'mz_array', 'intensity_array']
-        # 返回生成的新的共识谱的信息
+        # Return information for the newly generated consensus spectrum
         return pd.Series([precursor_mz, Nreps, posterior_error_probability, peptidoform, usi, precursor_charge, mzs, intensities],
-                         index=new_spectrum_index)  # 需要加usi, 然后comment用
+                         index=new_spectrum_index)

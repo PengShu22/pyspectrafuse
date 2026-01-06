@@ -63,8 +63,8 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
     :param charge:
     :param instrument:
     :param species:
-    :param parquet_dir: 项目dirname 
-    :param strategy_type: 共识谱生成方法类型
+    :param parquet_dir: Project directory name
+    :param method_type: Consensus spectrum generation method type
     :param sim:
     :param fragment_mz_tolerance:
     :param min_mz:
@@ -84,22 +84,23 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
     # print(instrument)
     # print(charge)
     split_type = ""
-    path_sdrf = find_target_ext_files(parquet_dir, '.sdrf.tsv')[0]  # sdrf 文件的地址
+    path_sdrf = find_target_ext_files(parquet_dir, '.sdrf.tsv')[0]  # SDRF file path
     print("path_sdrf", path_sdrf)
-    path_parquet_lst = find_target_ext_files(parquet_dir, '.parquet')  # parquet_dir只是项目的地址, 这里返回所有的parquet文件
+    path_parquet_lst = find_target_ext_files(parquet_dir, '.parquet')  # parquet_dir is the project path, returns all parquet files
     print("parquet path is",path_parquet_lst)
 
-    output_dir = Path(f'{parquet_dir}/msp/{species}/{instrument}/{charge}')  # 创建结果MSP目录
+    output_dir = Path(f'{parquet_dir}/msp/{species}/{instrument}/{charge}')  # Create output MSP directory
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = ParquetPathHandler(parquet_dir).get_item_info()  # PXD008467
-    output = f"{output_dir}/{basename}_{uuid.uuid4()}.msp.txt"  # 一个项目对应一个msp格式文件
+    output = f"{output_dir}/{basename}_{uuid.uuid4()}.msp.txt"  # One project corresponds to one MSP format file
 
-    # 得到聚类结果文件，添加了物种仪器电荷信息，因为在nf中，在work目录中没有这个信息，找不到
+    # Get cluster result file, adding species/instrument/charge information since this info is not available in the work directory in Nextflow
     cluster_res_dict = ClusterResHandler.get_cluster_dict(cluster_tsv_file, species, instrument, charge)
     print("cluster_res_dict", cluster_res_dict)
 
-    # TODO: 根据电荷自动找parquet文件
-    # 如果parquet文件以电荷拆分，根据电荷查询对应的parquet文件，因为大文件下一个charge有多个parquet
+    # TODO: Automatically find parquet files based on charge
+    # If parquet files are split by charge, query corresponding parquet files based on charge,
+    # as large files may have multiple parquet files per charge
     if split_type == "charge":
         path_parquet = [i for i in path_parquet_lst if i.split('-')[-1][0] == charge[-1]][0]
     else:
@@ -109,10 +110,10 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
                                                       path_sdrf=path_sdrf, # C:\E\graduation\cluster\PXD004732\PXD004732.sdrf.tsv
                                                       clu_map_dict=cluster_res_dict)  # {'Homo sapiens/Orbitrap Fusion Lumos/charge4/mgf files/PXD004732-consensus_1.mgf/1': 1}
 
-    # 不同的肽段修饰(基于peptidoform)
+    # Different peptide modifications (based on peptidoform)
     # pep_lst = df['peptidoform'].to_list()
     # print(f"sequence num is {len(pep_lst)}")
-    # print(f"去重后的sequence num is {len(np.unique(pep_lst))}")
+    # print(f"unique sequence num is {len(np.unique(pep_lst))}")
 
     consensus_strategy = None
     if method_type == "best":
@@ -137,9 +138,9 @@ def spectrum2msp(parquet_dir, method_type, cluster_tsv_file, species, instrument
 
     if consensus_strategy:
         consensus_spectrum_df, single_spectrum_df = consensus_strategy.consensus_spectrum_aggregation(
-            df)  # 获得共识谱的df
+            df)  # Get consensus spectrum dataframe
 
-        # 转化为msp文件需要的格式
+        # Convert to MSP file format
         for spectrum_df in [consensus_spectrum_df, single_spectrum_df]:
             print("consensus_spectrum_df: ", consensus_spectrum_df)
             print("single_spectrum_df: ", single_spectrum_df)

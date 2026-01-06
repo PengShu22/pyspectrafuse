@@ -7,18 +7,19 @@ logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=log
 logger = logging.getLogger(__name__)
 
 
-# 定义共识谱生成策略抽象基类
+# Abstract base class for consensus spectrum generation strategies
 class ConsensusStrategy:
     def consensus_spectrum_aggregation(self, cluster_df: pd.DataFrame, filter_metrics):
         pass
 
     @staticmethod
     def top_n_rows(df, column, n):
-        # 获取列的值
+        """Get the top n rows with smallest values in the specified column."""
+        # Get column values
         values = df[column].values
-        # 计算前n个最小值的索引
+        # Calculate indices of the n smallest values
         indices = np.argpartition(values, n)[:n]
-        # 返回对应的行
+        # Return corresponding rows
         return df.iloc[indices]
 
     @staticmethod
@@ -64,7 +65,7 @@ class ConsensusStrategy:
         count_median_10 = df[np.in1d(df['cluster_accession'],
                                      counts[(counts >= 2) & (
                                              counts <= 10)].index)]  # spectrum between 2 and 10
-        # 合并过滤后的top10和median
+        # Merge filtered top10 and median results
         merge_df = pd.DataFrame(np.vstack([count_top10.values, count_median_10.values]),
                                 columns=count_top10.columns)
 

@@ -44,11 +44,8 @@ def _norm_intensity(spectrum_intensity: np.ndarray) -> np.ndarray:
     np.ndarray
         The normalized peak intensities.
     """
-    # np.linalg.norm 求范数  默认2范数  即欧几里得距离
-    # print("spectrum_intensity:",spectrum_intensity)
-    # print("np.linalg.norm(spectrum_intensity):2范数：",np.linalg.norm(spectrum_intensity))
-    # print(spectrum_intensity / np.linalg.norm(spectrum_intensity))
-    # 峰强度除以自身距离：[0.24185342 0.01197852 0.00516618 0.00236884...] # 意义： 归一化峰值强度 使其范围在0-1之间
+    # np.linalg.norm calculates the norm, default is L2 norm (Euclidean distance)
+    # Normalize peak intensities by dividing by their norm to scale values between 0-1
     return spectrum_intensity / np.linalg.norm(spectrum_intensity)
 
 
