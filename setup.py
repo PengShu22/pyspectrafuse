@@ -1,38 +1,3 @@
-from setuptools import setup, find_packages
-
-
-def readme():
-    with open('README.md') as f:
-        return f.read()
-
-
-setup(name='pyspectrafuse',
-      version='0.0.1',
-      description='Python tools for handle cluster pipeline',
-      url='https://github.com/bigbio/pyspectrafuse',
-      long_description=readme(),
-      long_description_content_type='text/markdown',
-      author='PgAtk Team',
-      author_email='ypriverol@gmail.com',
-      license='LICENSE.txt',
-      include_package_data=True,
-      install_requires=[
-          'Click',
-          'numpy',
-          'pandas',
-          'pathlib',
-          'pyarrow',
-          'spectrum_utils[iplot]',
-      ],
-      python_requires=">=3.8",
-      scripts=['pyspectrafuse/pyspectrafuse_cli.py'],
-      packages=find_packages(),
-      entry_points={
-          'console_scripts': [
-              'pyspectrafuse = pyspectrafuse.pyspectrafuse_cli:main'
-          ]},
-      package_data={'pypgatk': ['config/*.yaml', 'config/*.json']}, zip_safe=False)
-
 import codecs
 import os.path
 
@@ -45,7 +10,7 @@ with open("README.md", encoding="UTF-8") as fh:
 
 def read(rel_path):
     here = os.path.abspath(os.path.dirname(__file__))
-    with codecs.open(os.path.join(here, rel_path),encoding='utf-8') as fp:
+    with codecs.open(os.path.join(here, rel_path), encoding='utf-8') as fp:
         return fp.read()
 
 
@@ -65,7 +30,7 @@ setup(
     description="command utils for cluster",
     long_description_content_type="text/markdown",
     long_description=long_description,
-    license="'Apache 2.0",
+    license="Apache-2.0",
     data_files=[("", ["LICENSE"])],
     package_data={
         "": ["*.xml"],
