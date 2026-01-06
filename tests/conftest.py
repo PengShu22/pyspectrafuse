@@ -54,7 +54,6 @@ def sample_spectrum_data():
 @pytest.fixture
 def sample_cluster_df():
     """Create a sample cluster DataFrame."""
-    import numpy as np
     return pd.DataFrame({
         'cluster_accession': ['cluster1', 'cluster1', 'cluster2'],
         'usi': ['mzspec:PXD000001:file1.mzML:scan:1', 'mzspec:PXD000001:file1.mzML:scan:2', 'mzspec:PXD000001:file2.mzML:scan:1'],
