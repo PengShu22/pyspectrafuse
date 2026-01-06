@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyspectrafuse"
+version = "0.0.2"
+authors = [
+  { name="BigBio Team", email="ypriverol@gmail.com"}
+]
+description = "Python library with utility scripts for spectrafuse pipeline"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+urls = { "Homepage" = "https://github.com/bigbio/pyspectrafuse" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+keywords = ["python", "proteomics", "quantms", "cluster"]
+requires-python = ">=3.8"
+dependencies = [
+  'Click>=8.3.1',
+  'numpy>=2.3.5',
+  'pandas>=2.3.3',
+  'pathlib>=1.0.1',
+  'pyarrow>=22.0.0',
+  'pyteomics>=4.7.5',
+  'spectrum_utils>=0.5.0'
+]
+
+[project.scripts]
+pyspectrafuse_cli = "pyspectrafuse.pyspectrafuse_cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyspectrafuse*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.xml"]
