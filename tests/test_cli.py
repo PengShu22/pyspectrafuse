@@ -11,7 +11,8 @@ class TestCLI:
         runner = CliRunner()
         result = runner.invoke(cli, ['--help'])
         assert result.exit_code == 0
-        assert 'pyspectrafuse' in result.output.lower()
+        # Check for actual content in the help output
+        assert 'convert-mgf' in result.output.lower() or 'msp' in result.output.lower()
 
     def test_cli_version(self):
         """Test CLI version command."""

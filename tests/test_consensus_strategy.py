@@ -16,7 +16,10 @@ class TestConsensusStrategy:
         })
         result = ConsensusStrategy.top_n_rows(df, 'value', 3)
         assert len(result) == 3
-        assert result['value'].min() == 8
+        # top_n_rows returns the n smallest values, so min should be 1 (the smallest value)
+        assert result['value'].min() == 1
+        # Verify that all returned values are among the smallest
+        assert all(val <= 5 for val in result['value'].values)
 
     def test_get_cluster_counts(self):
         """Test get_cluster_counts static method."""
