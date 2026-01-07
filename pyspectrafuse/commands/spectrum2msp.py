@@ -178,7 +178,7 @@ def spectrum2msp(parquet_dir: str, method_type: str, cluster_tsv_file: str,
     output_dir = Path(parquet_dir) / 'msp' / species / instrument / charge
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = ParquetPathHandler(parquet_dir).get_item_info()
-    output = output_dir / f"{basename}_{uuid.uuid4()}.msp.txt"
+    output = output_dir / f"{basename}_{uuid.uuid4()}.msp"
 
     # Load cluster results
     cluster_res_dict = ClusterResHandler.get_cluster_dict(

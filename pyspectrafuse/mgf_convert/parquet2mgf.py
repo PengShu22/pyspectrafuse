@@ -18,9 +18,19 @@ class Parquet2Mgf:
 
     @staticmethod
     def write2mgf(target_path: str, write_content: str):
+        # NOTE: This function may be called multiple times for the same target file (parquet batches).
+        # Always ensure we separate batches with blank lines, otherwise we can end up with:
+        #   END IONSBEGIN IONS
+        # which breaks strict MGF parsers (e.g. MaRaCluster).
+        needs_separator = os.path.exists(target_path) and os.path.getsize(target_path) > 0
         with open(target_path, 'a') as f:
             logger.info(f"Writing spectrum to MGF file at path: {target_path}")
+            if needs_separator:
+                f.write("\n")
             f.write(write_content)
+            # Ensure file ends with a newline to make subsequent appends safe.
+            if write_content and not write_content.endswith("\n"):
+                f.write("\n")
 
     @staticmethod
     def get_mz_intensity_str(mz_series, intensity_series) -> str:
