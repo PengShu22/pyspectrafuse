@@ -25,6 +25,7 @@ from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumS
 from pyspectrafuse.consensus_strategy.most_similar_strategy import MostSimilarStrategy
 from pyspectrafuse.consensus_strategy.binning_strategy import BinningStrategy
 from pyspectrafuse.consensus_strategy.average_spectrum_strategy import AverageSpectrumStrategy
+from click.testing import CliRunner
 
 logger = logging.getLogger(__name__)
 
@@ -217,19 +218,27 @@ def test_convert_mgf_integration(ftp_data_dir, tmp_path):
     try:
         os.chdir(str(ftp_data_dir))
         
-        # Run convert-mgf command with small batch size for testing
-        quantmsio2mgf(
-            parquet_dir=str(ftp_data_dir),
-            batch_size=1000,  # Small batch for testing
-            spectra_capacity=10000,  # Small capacity for testing
-            task_parallel=1
+        # Use Click's CliRunner to invoke the command properly
+        runner = CliRunner()
+        result = runner.invoke(
+            quantmsio2mgf,
+            [
+                '--parquet_dir', str(ftp_data_dir),
+                '--batch_size', '1000',
+                '--spectra_capacity', '10000',
+                '--task_parallel', '1'
+            ]
         )
+        
+        # Check if command executed successfully
+        assert result.exit_code == 0, f"Command failed with exit code {result.exit_code}. Output: {result.output}"
         
         # Check if MGF files were created
         mgf_output_dir = Path(ftp_data_dir) / "mgf_output"
         assert mgf_output_dir.exists(), "MGF output directory was not created"
         
-        mgf_files = list(mgf_output_dir.glob("*.mgf"))
+        # Find MGF files recursively
+        mgf_files = list(mgf_output_dir.rglob("*.mgf"))
         assert len(mgf_files) > 0, "No MGF files were created"
         
         # Verify MGF file content
