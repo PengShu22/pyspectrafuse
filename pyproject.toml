@@ -33,7 +33,7 @@ Homepage = "https://github.com/bigbio/pyspectrafuse"
 Repository = "https://github.com/bigbio/pyspectrafuse"
 
 [project.scripts]
-pyspectrafuse_cli = "pyspectrafuse.pyspectrafuse_cli:main"
+pyspectrafuse = "pyspectrafuse.pyspectrafuse:main"
 
 [tool.setuptools]
 include-package-data = true

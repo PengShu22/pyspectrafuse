@@ -4,7 +4,6 @@ from pyspectrafuse.commands.spectrum2msp import spectrum2msp
 from pyspectrafuse import __version__
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
-REVISION = "0.1.1"
 
 
 # Cli returns command line requests

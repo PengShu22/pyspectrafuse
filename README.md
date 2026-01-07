@@ -64,7 +64,7 @@ The package provides a command-line interface with two main commands:
 Convert parquet files to MGF format:
 
 ```bash
-pyspectrafuse_cli convert-mgf \
+pyspectrafuse convert-mgf \
     --parquet_dir /path/to/parquet/files \
     --batch_size 100000 \
     --spectra_capacity 1000000 \
@@ -82,7 +82,7 @@ pyspectrafuse_cli convert-mgf \
 Generate MSP format files from clustered spectra:
 
 ```bash
-pyspectrafuse_cli msp \
+pyspectrafuse msp \
     --parquet_dir /path/to/project \
     --method_type average \
     --cluster_tsv_file /path/to/cluster.tsv \

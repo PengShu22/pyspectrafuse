@@ -30,7 +30,7 @@ COPY pyspectrafuse/ ./pyspectrafuse/
 RUN pip install --no-cache-dir -e .
 
 # Set the entrypoint
-ENTRYPOINT ["pyspectrafuse_cli"]
+ENTRYPOINT ["pyspectrafuse"]
 
 # Default command
 CMD ["--help"]
