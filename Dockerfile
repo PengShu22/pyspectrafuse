@@ -1,37 +1,49 @@
+################## BASE IMAGE ######################
 FROM python:3.10-slim
 
-LABEL maintainer="BigBio Team <ypriverol@gmail.com>"
-LABEL description="pyspectrafuse - Command-line utilities for spectrum clustering and conversion"
+################## METADATA ######################
+LABEL base_image="python:3.10-slim"
+LABEL version="1"
+LABEL software="pyspectrafuse"
+LABEL software.version="0.0.2"
+LABEL about.summary="pyspectrafuse - Command-line utilities for spectrum clustering and conversion"
+LABEL about.home="https://github.com/bigbio/pyspectrafuse"
+LABEL about.documentation="https://github.com/bigbio/pyspectrafuse"
+LABEL about.license_file="https://github.com/bigbio/pyspectrafuse/blob/master/LICENSE"
+LABEL about.license="SPDX:Apache-2.0"
+LABEL about.tags="Proteomics,Multiomics,QuantMS"
 
-# Set working directory
-WORKDIR /app
+################## MAINTAINER ######################
+MAINTAINER Yasset Perez-Riverol <ypriverol@gmail.com>
 
-# Set numba cache directory to a writable location
-ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+################## INSTALLATION ######################
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Disable numba caching to avoid issues in containerized environments
+# Numba caching fails in containers because it can't locate source files in site-packages
+ENV NUMBA_DISABLE_CACHING=1
+
+## Update and install packages
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends \
     build-essential \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /tmp/numba_cache
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+## Set working directory
+WORKDIR /data/
+
+## Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
+## Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy project files
+## Copy project files
 COPY pyproject.toml .
 COPY pyspectrafuse/ ./pyspectrafuse/
 
-# Install the package
+## Install the package
 RUN pip install --no-cache-dir -e .
-
-# Set the entrypoint
-ENTRYPOINT ["pyspectrafuse"]
-
-# Default command
-CMD ["--help"]
 
