@@ -88,6 +88,18 @@ jobs:
         # Note: Only building for linux/amd64
         platforms: linux/amd64
 
+    - name: Test container functionality
+      run: |
+        echo "Testing container import and CLI..."
+        docker run --rm ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} --help || docker run --rm ghcr.io/bigbio/pyspectrafuse:latest --help
+        echo "Testing Python imports..."
+        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "from pyspectrafuse.pyspectrafuse_cli import main; print('CLI import successful')" || docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:latest -c "from pyspectrafuse.pyspectrafuse_cli import main; print('CLI import successful')"
+        echo "Testing consensus strategy imports..."
+        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumStrategy; print('BestSpectrumStrategy import successful')" || docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:latest -c "from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumStrategy; print('BestSpectrumStrategy import successful')"
+        echo "Testing spectrum_utils import (numba caching test)..."
+        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "import spectrum_utils.spectrum as sus; print('spectrum_utils import successful')" || docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:latest -c "import spectrum_utils.spectrum as sus; print('spectrum_utils import successful')"
+        echo "All container tests passed!"
+
     - name: Free up disk space after build
       run: |
         docker image rm ghcr.io/bigbio/pyspectrafuse:latest || true

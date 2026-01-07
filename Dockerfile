@@ -6,10 +6,14 @@ LABEL description="pyspectrafuse - Command-line utilities for spectrum clusterin
 # Set working directory
 WORKDIR /app
 
+# Set numba cache directory to a writable location
+ENV NUMBA_CACHE_DIR=/tmp/numba_cache
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /tmp/numba_cache
 
 # Copy requirements first for better caching
 COPY requirements.txt .

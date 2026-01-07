@@ -54,3 +54,4 @@ class TestParquetPathHandler:
         assert len(result) > 0
         assert any('test.parquet' in str(p) for p in result)
 
+

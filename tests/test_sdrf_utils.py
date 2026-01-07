@@ -35,3 +35,4 @@ class TestSdrfUtil:
             assert isinstance(value, list)
             assert len(value) == 2  # organism and instrument
 
+
