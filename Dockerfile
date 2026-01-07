@@ -28,6 +28,7 @@ ENV NUMBA_DISABLE_CACHING=1
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
     build-essential \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 ## Set working directory
