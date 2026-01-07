@@ -91,7 +91,8 @@ class CombineCluster2Parquet:
             filenames = row_group['USI'].str.split(':').str[2]
             sample_info = filenames.map(sample_info_dict)
             charges = 'charge' + row_group['charge'].astype(str)
-            mgf_group_df['mgf_file_path'] = (sample_info + '/' + charges + '/mgf files')
+            # sample_info_dict values are lists [species, instrument]; join them with '/'
+            mgf_group_df['mgf_file_path'] = sample_info.apply(lambda x: '/'.join(x) if isinstance(x, list) else str(x)) + '/' + charges + '/mgf files'
 
             # Pre-compute basename to avoid repeated string operations
             basename_parquet = Path(path_parquet).parts[-1].split('.')[0]
