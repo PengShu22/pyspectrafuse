@@ -26,7 +26,7 @@ class Parquet2Mgf:
         with open(target_path, 'a') as f:
             logger.info(f"Writing spectrum to MGF file at path: {target_path}")
             if needs_separator:
-                f.write("\n\n")
+                f.write("\n")
             f.write(write_content)
             # Ensure file ends with a newline to make subsequent appends safe.
             if write_content and not write_content.endswith("\n"):
