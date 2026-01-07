@@ -9,7 +9,6 @@ from pathlib import Path
 import os
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
-REVISION = "0.1.1"
 
 logger = logging.getLogger(__name__)
 

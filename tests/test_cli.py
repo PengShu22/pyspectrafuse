@@ -1,6 +1,6 @@
 """Tests for CLI commands."""
 from click.testing import CliRunner
-from pyspectrafuse.pyspectrafuse_cli import cli
+from pyspectrafuse.pyspectrafuse import cli
 
 
 class TestCLI:

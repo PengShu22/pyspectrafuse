@@ -50,3 +50,4 @@ Tests are automatically run on GitHub Actions for:
 - Multiple operating systems (Ubuntu, macOS)
 - On every push and pull request
 
+

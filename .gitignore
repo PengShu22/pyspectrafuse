@@ -163,3 +163,14 @@ cython_debug/
 #Ignore cursor AI rules
 .cursor/
 .codacy/
+
+# Test data files (downloaded from FTP)
+**/PXD*.parquet
+**/PXD*.sdrf.tsv
+**/pyspectrafuse_ftp_test_*/
+**/mgf_output/
+**/msp_output/
+**/*.mgf
+**/*.msp
+**/test_data/
+**/integration_test_data/
