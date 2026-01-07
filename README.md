@@ -1,5 +1,11 @@
 # pyspectrafuse
 
+[![Tests](https://github.com/bigbio/pyspectrafuse/actions/workflows/tests.yml/badge.svg)](https://github.com/bigbio/pyspectrafuse/actions/workflows/tests.yml)
+[![Containers](https://github.com/bigbio/pyspectrafuse/actions/workflows/pyspectrafuse-containers.yml/badge.svg)](https://github.com/bigbio/pyspectrafuse/actions/workflows/pyspectrafuse-containers.yml)
+[![codecov](https://codecov.io/gh/bigbio/pyspectrafuse/branch/master/graph/badge.svg)](https://codecov.io/gh/bigbio/pyspectrafuse)
+[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 Python library with utility scripts for spectrafuse pipeline - a tool for processing and converting mass spectrometry data formats, generating consensus spectra, and handling cluster-based analysis workflows.
 
 ## Features
