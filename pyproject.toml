@@ -5,37 +5,63 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pyspectrafuse"
 version = "0.0.2"
-authors = [
-  { name="BigBio Team", email="ypriverol@gmail.com"}
-]
-description = "Python library with utility scripts for spectrafuse pipeline"
+description = "command utils for cluster"
 readme = "README.md"
-license = { text = "Apache-2.0" }
-urls = { "Homepage" = "https://github.com/bigbio/pyspectrafuse" }
+requires-python = ">=3.8"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "BigBio Team", email = "ypriverol@gmail.com"}
+]
+keywords = ["python", "multiomics", "proteomics", "quantms", "reanalysis"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-keywords = ["python", "proteomics", "quantms", "cluster"]
-requires-python = ">=3.8"
 dependencies = [
-  'Click>=8.3.1',
-  'numpy>=2.3.5',
-  'pandas>=2.3.3',
-  'pathlib>=1.0.1',
-  'pyarrow>=22.0.0',
-  'pyteomics>=4.7.5',
-  'spectrum_utils>=0.5.0'
+    "Click",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "pyteomics",
+    "spectrum_utils",
 ]
 
+[project.urls]
+Homepage = "https://github.com/bigbio/pyspectrafuse"
+Repository = "https://github.com/bigbio/pyspectrafuse"
+
 [project.scripts]
-pyspectrafuse_cli = "pyspectrafuse.pyspectrafuse_cli:main"
+pyspectrafuse = "pyspectrafuse.pyspectrafuse:main"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
-where = ["."]
 include = ["pyspectrafuse*"]
-
 [tool.setuptools.package-data]
 "*" = ["*.xml"]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+

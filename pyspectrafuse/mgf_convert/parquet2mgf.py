@@ -1,4 +1,4 @@
-import time
+from typing import Tuple
 import pyarrow.parquet as pq
 import pandas as pd
 import numpy as np
@@ -11,7 +11,6 @@ import os
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 from pyspectrafuse.common.sdrf_utils import SdrfUtil
 
-logging.basicConfig(format="%(asctime)s [%(funcName)s] - %(message)s", level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -19,9 +18,19 @@ class Parquet2Mgf:
 
     @staticmethod
     def write2mgf(target_path: str, write_content: str):
+        # NOTE: This function may be called multiple times for the same target file (parquet batches).
+        # Always ensure we separate batches with blank lines, otherwise we can end up with:
+        #   END IONSBEGIN IONS
+        # which breaks strict MGF parsers (e.g. MaRaCluster).
+        needs_separator = os.path.exists(target_path) and os.path.getsize(target_path) > 0
         with open(target_path, 'a') as f:
-            logger.info(f"正在向mgf路径为: {target_path}写入spectrum")
+            logger.info(f"Writing spectrum to MGF file at path: {target_path}")
+            if needs_separator:
+                f.write("\n")
             f.write(write_content)
+            # Ensure file ends with a newline to make subsequent appends safe.
+            if write_content and not write_content.endswith("\n"):
+                f.write("\n")
 
     @staticmethod
     def get_mz_intensity_str(mz_series, intensity_series) -> str:
@@ -34,7 +43,7 @@ class Parquet2Mgf:
         if mz_series is None or intensity_series is None:
             return ""
 
-        # 一次性解析两个字符串为列表，避免重复解析
+        # Parse both strings to lists at once to avoid repeated parsing
         mz_list = ast.literal_eval(mz_series)
         intensity_list = ast.literal_eval(intensity_series)
 
@@ -45,13 +54,22 @@ class Parquet2Mgf:
         return combined_str
 
     @staticmethod
-    def get_usi(row, dataset_id: str):
+    def get_usi(row: pd.Series, dataset_id: str) -> str:
+        """Generate USI string from row data.
+        
+        Args:
+            row: Pandas Series with spectrum data
+            dataset_id: Dataset identifier (e.g., PXD008467)
+            
+        Returns:
+            USI string
+        """
         usi_str = (f'mzspec:{dataset_id}:{row["reference_file_name"]}:'
                    f'scan:{str(row["scan_number"])}:{row["sequence"]}/{row["charge"]}')
         return usi_str
 
     @staticmethod
-    def get_spectrum(row, dataset_id: str):
+    def get_spectrum(row: pd.Series, dataset_id: str) -> str:
         res_str = (f"BEGIN IONS\n"  # begin
                    f'TITLE=id={row["USI"]}\n'  # usi
                    f'PEPMASS={str(row["exp_mass_to_charge"])}\n'  # pepmass
@@ -63,14 +81,19 @@ class Parquet2Mgf:
         return res_str
 
     @staticmethod
-    def get_filename_from_usi(row) -> str:
-        """
-        get filename from USI
+    def get_filename_from_usi(row: pd.Series) -> str:
+        """Extract filename from USI string.
+        
+        Args:
+            row: Pandas Series containing 'USI' column
+            
+        Returns:
+            Filename extracted from USI
         """
         return row['USI'].split(':')[2]
 
-    def convert_to_mgf(self, parquet_path: str, sdrf_path: str, output_path: str, batch_size: int,
-                       spectra_capacity: int) -> None:
+    def convert_to_mgf(self, parquet_path: str, sdrf_path: str, output_path: str, 
+                       batch_size: int, spectra_capacity: int) -> None:
         """
          A single parquet file is read in blocks, and then grouped by species, instrument, charge,
          and converted to parquet files
@@ -104,10 +127,13 @@ class Parquet2Mgf:
                 lambda row: '/'.join(sample_info_dict.get(Parquet2Mgf.get_filename_from_usi(row)) +
                                      ['charge' + str(row["charge"]), 'mgf files']), axis=1)
 
+            # Pre-compute basename to avoid repeated string operations
+            basename_parquet = Path(parquet_path).parts[-1].split('.')[0]
+            
             for group, group_df in mgf_group_df.groupby('mgf_file_path'):
                 base_mgf_path = f"{output_path}/{group}"
-                mgf_file_path = (f"{base_mgf_path}/{Path(parquet_path).parts[-1].split('.')[0]}_"
-                                 f"{relation_dict[base_mgf_path] + 1}.mgf")
+                file_index = relation_dict[base_mgf_path] + 1
+                mgf_file_path = f"{base_mgf_path}/{basename_parquet}_{file_index}.mgf"
                 Path(mgf_file_path).parent.mkdir(parents=True, exist_ok=True)
 
                 if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
@@ -124,13 +150,18 @@ class Parquet2Mgf:
                     relation_dict[base_mgf_path] += 1
                     write_count_dict[group] = 0
 
-                    mgf_file_path = (f"{base_mgf_path}/{Path(parquet_path).parts[-1].split('.')[0]}_"
-                                     f"{relation_dict[base_mgf_path] + 1}.mgf")
+                    file_index = relation_dict[base_mgf_path] + 1
+                    mgf_file_path = f"{base_mgf_path}/{basename_parquet}_{file_index}.mgf"
                     group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
                     Parquet2Mgf.write2mgf(mgf_file_path, '\n\n'.join(group_df_tail["spectrum"]))
                     write_count_dict[group] += group_df_tail.shape[0]
 
-    def convert_to_mgf_task(self, args):
+    def convert_to_mgf_task(self, args: Tuple[str, str, str, int, int]) -> None:
+        """Task wrapper for parallel processing.
+        
+        Args:
+            args: Tuple of (parquet_file_path, sdrf_file_path, res_file_path, batch_size, spectra_capacity)
+        """
         parquet_file_path, sdrf_file_path, res_file_path, batch_size, spectra_capacity = args
         logger.info(f"Converting {os.path.basename(parquet_file_path)} to MGF format...")
         self.convert_to_mgf(parquet_file_path, sdrf_file_path, res_file_path,

@@ -1,15 +1,38 @@
+from typing import Tuple, List, Dict, Any, Iterable
 from pyteomics import mass
 from pyspectrafuse.consensus_strategy.consensus_strategy_base import ConsensusStrategy
 import pandas as pd
 import numpy as np
+import logging
 from pyspectrafuse.mgf_convert.parquet2mgf import Parquet2Mgf
 from pyspectrafuse.common.msp_utils import MspUtil
 
+logger = logging.getLogger(__name__)
+
 
 class AverageSpectrumStrategy(ConsensusStrategy):
+    """Average spectrum strategy generates consensus by averaging spectra.
+    
+    This strategy generates a new consensus spectrum by averaging m/z values
+    and intensities across all spectra in a cluster.
+    """
     H = mass.nist_mass['H+'][0][0]
 
-    def __init__(self, DIFF_THRESH=0.01, DYN_RANGE=1000, MIN_FRACTION=0.5, pepmass='lower_median', msms_avg='weighted'):
+    def __init__(self, DIFF_THRESH: float = 0.01, DYN_RANGE: int = 1000, 
+                 MIN_FRACTION: float = 0.5, pepmass: str = 'lower_median', 
+                 msms_avg: str = 'weighted'):
+        """Initialize AverageSpectrumStrategy.
+        
+        Args:
+            DIFF_THRESH: Minimum distance between MS/MS peak clusters
+            DYN_RANGE: Dynamic range to apply to output spectra
+            MIN_FRACTION: Minimum fraction of cluster spectra where peak must be present
+            pepmass: Method for calculating precursor mass ('naive_average', 'neutral_average', 'lower_median')
+            msms_avg: Method for averaging MS/MS peaks ('naive', 'weighted')
+            
+        Raises:
+            ValueError: If pepmass or msms_avg values are invalid
+        """
         self.DIFF_THRESH = DIFF_THRESH
         self.DYN_RANGE = DYN_RANGE
         self.MIN_FRACTION = MIN_FRACTION
@@ -23,17 +46,48 @@ class AverageSpectrumStrategy(ConsensusStrategy):
             'pepmass': self.pepmass,  # lower_median
             'msms_avg': self.msms_avg  # weighted
         }
+        if pepmass not in ['naive_average', 'neutral_average', 'lower_median']:
+            raise ValueError(f"Invalid pepmass method: {pepmass}")
+        if msms_avg not in ['naive', 'weighted']:
+            raise ValueError(f"Invalid msms_avg method: {msms_avg}")
+            
         self.get_pepmass = {'naive_average': self.naive_average_mass_and_charge,
                             'neutral_average': self.neutral_average_mass_and_charge,
                             'lower_median': self.lower_median_mass}[pepmass]
-        self.kwargs = {'mz_accuracy': self.params_dict['mz_accuracy'], 'dyn_range': self.params_dict['dyn_range'],
-                       'min_fraction': self.params_dict['min_fraction'], 'msms_avg': self.params_dict['msms_avg']}
+        self.kwargs = {'mz_accuracy': self.params_dict['mz_accuracy'], 
+                      'dyn_range': self.params_dict['dyn_range'],
+                      'min_fraction': self.params_dict['min_fraction'], 
+                      'msms_avg': self.params_dict['msms_avg']}
 
-    def consensus_spectrum_aggregation(self, cluster_df: pd.DataFrame, filter_metrics='global_qvalue'):
+    def consensus_spectrum_aggregation(self, cluster_df: pd.DataFrame, 
+                                       filter_metrics: str = 'global_qvalue') -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Generate consensus spectrum using averaging approach.
+        
+        Args:
+            cluster_df: DataFrame containing cluster spectrum data
+            filter_metrics: Metric column name for filtering (unused in this strategy)
+            
+        Returns:
+            Tuple of (consensus_spectrum_df, single_spectrum_df)
+            
+        Raises:
+            ValueError: If cluster_df is empty
+        """
+        if cluster_df.empty:
+            raise ValueError("cluster_df is empty")
+            
         merge_median_and_top, single_spectrum_df = self.classify_cluster_group(cluster_df, filter_metrics)
-        merge_median_and_top['ms2spectrumDict'] = merge_median_and_top.apply(lambda row: self.get_Ms2SpectrumDict(row),
-                                                                             axis=1)
-        res = merge_median_and_top.groupby('cluster_accession').apply(self.get_average_spectrum)
+        
+        if merge_median_and_top.empty:
+            logger.warning("No clusters with multiple spectra found")
+            return merge_median_and_top, single_spectrum_df
+            
+        merge_median_and_top['ms2spectrumDict'] = merge_median_and_top.apply(
+            lambda row: self.get_Ms2SpectrumDict(row), axis=1)
+        res = merge_median_and_top.groupby('cluster_accession').apply(
+            self.get_average_spectrum, include_groups=False)
+
+        return res, single_spectrum_df
 
         return res, single_spectrum_df
 
@@ -65,32 +119,6 @@ class AverageSpectrumStrategy(ConsensusStrategy):
         out : average spectrum in pyteomics format
 
 
-                生成一个聚类中的平均频谱。
-
-            参数
-            ----------
-            spectra:可迭代的
-            光谱的可迭代对象，每个光谱期望为pyteomics格式。
-            Title: str，可选
-            输出频谱的标题
-            Mz_accuracy:浮点数，仅限关键字，可选
-            m/z精度用于MS/MS聚类。默认值是`DIFF_THRESH`
-            Dyn_range:浮点数，仅限关键字，可选
-            应用于输出的动态范围(峰值小于max_intensity / dyn_range
-            被丢弃)
-            Msms_avg: {'naive'， 'weighted'}
-            代表光谱中MS/MS峰值m/z值的计算方法。
-            Naive: MS/MS级别集群内峰值m/z的简单平均值。
-            加权:以MS/MS峰值强度为权重的加权平均。
-            Min_fraction，浮点数，仅限关键字，可选
-            簇谱的最小部分需要包含峰。
-
-            返回
-            -------
-            输出:pyteomics格式的平均光谱
-            :param usi:
-            :param pep:
-            :param Nreps:
         '''
         mz_accuracy = self.kwargs.get('mz_accuracy', self.DIFF_THRESH)
         dyn_range = self.kwargs.get('dyn_range', self.DYN_RANGE)
@@ -169,7 +197,7 @@ class AverageSpectrumStrategy(ConsensusStrategy):
 
         new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
                               'usi', 'charge', 'mz_array', 'intensity_array']
-        # 返回生成的新的共识谱的信息
+        # Return information for the newly generated consensus spectrum
         return pd.Series([pepmass, Nreps, pep, peptidoform, usi, charge, new_mz_array, new_intensity_array],
                          index=new_spectrum_index)
 
