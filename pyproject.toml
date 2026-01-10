@@ -29,8 +29,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/bigbio/pyspectrafuse"
-Repository = "https://github.com/bigbio/pyspectrafuse"
+Homepage = "https://github.com/PengShu22/pyspectrafuse"
+Repository = "https://github.com/PengShu22/pyspectrafuse"
 
 [project.scripts]
 pyspectrafuse = "pyspectrafuse.pyspectrafuse:main"
