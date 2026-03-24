@@ -3,8 +3,9 @@ from enum import Enum
 
 class UseCol(Enum):
     """Column names used for parquet file operations."""
-    PARQUET_COL_TO_MGF = ['USI', 'sequence',
-                          'mz_array', 'intensity_array', 'charge', 'exp_mass_to_charge']
+    # PARQUET_COL_TO_MGF = ['USI', 'sequence','mz_array', 'intensity_array', 'charge', 'exp_mass_to_charge']
+    PARQUET_COL_TO_MGF = ['sequence', 'mz_array', 'intensity_array',
+                          'precursor_charge', 'exp_mass_to_charge', 'scan', 'reference_file_name']
 
     PARQUET_COL_TO_MSP = ['USI', 'sequence', 'peptidoform',
                           'mz_array', 'intensity_array', 'charge', 'exp_mass_to_charge']
@@ -22,7 +23,7 @@ class ClusterConstants:
     MEDIUM_CLUSTER_MIN = 2  # Minimum for medium clusters
     MEDIUM_CLUSTER_MAX = 10  # Maximum for medium clusters
     SINGLE_CLUSTER_SIZE = 1  # Single spectrum clusters
-    
+
     # Top N selection
     TOP_N_FOR_LARGE_CLUSTERS = 10  # Select top 10 spectra from large clusters
     TOP_N_FOR_CONSENSUS = 1  # Select 1 spectrum for consensus

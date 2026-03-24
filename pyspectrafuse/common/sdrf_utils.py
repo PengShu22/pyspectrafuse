@@ -3,6 +3,7 @@ from typing import Dict, List
 import pandas as pd
 import re
 import logging
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -25,53 +26,55 @@ class SdrfUtil:
             raise FileNotFoundError(f'There is no sdrf file in {folder}')
 
     @staticmethod
-    def get_metadata_dict_from_sdrf(sdrf_folder: str) -> Dict[str, List[str]]:
-        """Read the sdrf file to obtain the relationship between samples and instruments and species in a project.
-        
-        Args:
-            sdrf_folder: Path to SDRF file
-            
-        Returns:
-            Dictionary mapping data file names to [organism, instrument] lists
-            
-        Raises:
-            KeyError: If required columns are missing from SDRF file
-            ValueError: If instrument field cannot be parsed
+    def get_metadata_dict_from_sdrf(sdrf_folder: str, fill_unknown=True):
         """
-        # print("reading sdrf file: {}".format(sdrf_folder))
-        sdrf_df = pd.read_csv(sdrf_folder, sep='\t')
-        sdrf_feature_df = pd.DataFrame()
-        try:
-            sdrf_feature_df = sdrf_df.loc[:, ['comment[data file]', 'Characteristics[organism]', 'comment[instrument]']]
-        except KeyError as e:
-            missing_cols = set(['comment[data file]', 'Characteristics[organism]', 'comment[instrument]']) - set(sdrf_df.columns)
-            raise KeyError(f'{sdrf_folder} file has format error. Missing columns: {missing_cols}. Available columns: {list(sdrf_df.columns)}') from e
+        从SDRF DataFrame中构建样本信息字典：{数据文件名: [物种, 仪器名称]}
 
-        # print(sdrf_feature_df.head())
-        # print(sdrf_feature_df.columns.tolist())
+        参数:
+            sdrf_feature_df: 包含SDRF标准字段的pandas DataFrame
+            fill_unknown: 若为True，空值/无匹配值填充为'Unknown'；若为False，保留np.nan
 
-        # Vectorized string operation - much faster than apply()
-        sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].str.split('.').str[0]
-        
+        返回:
+            sample_info_dict: 键为comment[data file]，值为[organism, instrument]的字典
+        """
+
         def extract_instrument(x):
-            """Extract instrument name from comment[instrument] field."""
-            try:
-                nt_matches = [i for i in x.split(';') if i.startswith("NT=")]
-                if not nt_matches:
-                    raise ValueError(f"No NT= field found in instrument comment: {x}")
-                match = re.search(r'=(.*)', nt_matches[0])
-                if not match:
-                    raise ValueError(f"Could not extract instrument from: {x}")
-                return match.group(1)
-            except (IndexError, AttributeError) as e:
-                raise ValueError(f"Error parsing instrument field: {x}") from e
-        
+            """内部函数：从comment[instrument]字段提取仪器名称，兼容脏数据"""
+
+            if pd.isna(x) or not isinstance(x, str):
+                return np.nan
+
+            match = re.search(r'NT=\s*(.*?)\s*(;|$)', x.strip())
+            if not match:
+                return np.nan
+
+            return match.group(1).strip()
+        sdrf_feature_df = pd.read_csv(sdrf_folder, sep='\t')
+        # ---------------------- 1. 清洗并提取仪器名称 ----------------------
         sdrf_feature_df['comment[instrument]'] = sdrf_feature_df['comment[instrument]'].apply(extract_instrument)
 
-        # Vectorized operation - convert to list of lists
+        sdrf_feature_df['characteristics[organism]'] = sdrf_feature_df['characteristics[organism]'].apply(
+            lambda x: x.strip() if pd.notna(x) and isinstance(x, str) else np.nan
+        )
+
+        duplicate_files = sdrf_feature_df[sdrf_feature_df.duplicated('comment[data file]', keep=False)][
+            'comment[data file]'].unique()
+        if len(duplicate_files) > 0:
+            print(
+                f"comment[data file] have{len(duplicate_files)} repeat value：{duplicate_files[:3]}")
+            # sdrf_feature_df = sdrf_feature_df.drop_duplicates('comment[data file]', keep='first')
+
+        if fill_unknown:
+            sdrf_feature_df[['characteristics[organism]', 'comment[instrument]']] = \
+                sdrf_feature_df[['characteristics[organism]', 'comment[instrument]']].fillna('Unknown')
+
         sdrf_feature_df['organism_instrument'] = sdrf_feature_df[
-            ['Characteristics[organism]', 'comment[instrument]']].values.tolist()
+            ['characteristics[organism]', 'comment[instrument]']
+        ].values.tolist()
+        sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].apply(lambda x: x.replace('.raw', ''))
+
         sample_info_dict = sdrf_feature_df.set_index('comment[data file]')['organism_instrument'].to_dict()
+
         return sample_info_dict
 
 
