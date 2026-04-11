@@ -48,95 +48,100 @@ class CombineCluster2Parquet:
     def inject_cluster_info(self, path_parquet: Union[str, List[str]],
                            clu_map_dict: Dict[str, str], path_sdrf: str,
                            spectra_num: int = 1000000, batch_size: int = 200000) -> pd.DataFrame:
-        logger.info(f"Injecting cluster info: path_parquet: {path_parquet}")
-        if isinstance(path_parquet, list):
-            if not path_parquet:
-                raise ValueError("path_parquet list is empty")
-            path_parquet = path_parquet[0]
-        parquet_file = pq.ParquetFile(path_parquet)
+        """Inject cluster accession info into parquet spectrum data.
+
+        Supports a single parquet path or a list of parquet files. All files
+        are processed and the results are concatenated.
+        """
+        # Normalize to list
+        if isinstance(path_parquet, str):
+            path_parquet = [path_parquet]
+        if not path_parquet:
+            raise ValueError("path_parquet list is empty")
 
         cluster_res_lst = []
         sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(path_sdrf)
-        basename = ParquetPathHandler(path_parquet).get_item_info()
 
         write_count_dict = defaultdict(int)
         file_index_dict = defaultdict(int)
-        SPECTRA_NUM = spectra_num
-        BATCH_SIZE = batch_size
 
-        # Determine which columns exist in the parquet file
-        parquet_columns = [f.name for f in parquet_file.schema_arrow]
-        read_cols = ParquetSchemaAdapter.available_columns(
-            parquet_columns,
-            UseCol.PARQUET_COL_TO_MSP.value + UseCol.PARQUET_COL_TO_FILTER.value
-        )
-        # Also include additional_scores if it exists (QPX format)
-        if 'additional_scores' in parquet_columns:
-            read_cols.append('additional_scores')
+        for parquet_path in path_parquet:
+            logger.info(f"Injecting cluster info from: {parquet_path}")
+            parquet_file = pq.ParquetFile(parquet_path)
+            basename = ParquetPathHandler(parquet_path).get_item_info()
+            basename_parquet = Path(parquet_path).stem
 
-        for parquet_batch in parquet_file.iter_batches(batch_size=BATCH_SIZE,
-                                                       columns=read_cols):
-            row_group = parquet_batch.to_pandas()
+            # Determine which columns exist in this parquet file
+            parquet_columns = [f.name for f in parquet_file.schema_arrow]
+            read_cols = ParquetSchemaAdapter.available_columns(
+                parquet_columns,
+                UseCol.PARQUET_COL_TO_MSP.value + UseCol.PARQUET_COL_TO_FILTER.value
+            )
+            # Also include additional_scores if it exists (QPX format)
+            if 'additional_scores' in parquet_columns:
+                read_cols.append('additional_scores')
 
-            # Normalize column names (handles both msnet and QPX formats)
-            row_group = ParquetSchemaAdapter.adapt(row_group)
+            for parquet_batch in parquet_file.iter_batches(batch_size=batch_size,
+                                                           columns=read_cols):
+                row_group = parquet_batch.to_pandas()
 
-            # Construct USI from component columns
-            row_group['USI'] = ('mzspec:' + basename + ':' +
-                                row_group['reference_file_name'].astype(str) + ':scan:' +
-                                row_group['scan'].astype(str) + ':' +
-                                row_group['sequence'].astype(str) + '/' +
-                                row_group['charge'].astype(str))
+                # Normalize column names (handles both msnet and QPX formats)
+                row_group = ParquetSchemaAdapter.adapt(row_group)
 
-            # Extract spectrum data
-            mgf_group_df = row_group.loc[:, self.combine_info_col]
-            mgf_group_df['usi'] = row_group['USI']
+                # Construct USI from component columns
+                row_group['USI'] = ('mzspec:' + basename + ':' +
+                                    row_group['reference_file_name'].astype(str) + ':scan:' +
+                                    row_group['scan'].astype(str) + ':' +
+                                    row_group['sequence'].astype(str) + '/' +
+                                    row_group['charge'].astype(str))
 
-            # Map filenames to species/instrument from SDRF
-            filenames = row_group['reference_file_name']
-            sample_info = filenames.map(sample_info_dict)
-            charges = 'charge' + row_group['charge'].astype(str)
-            mgf_group_df['mgf_file_path'] = sample_info.apply(lambda x: '/'.join(x) if isinstance(x, list) else str(x)) + '/' + charges + '/mgf files'
+                # Extract spectrum data
+                mgf_group_df = row_group.loc[:, self.combine_info_col]
+                mgf_group_df['usi'] = row_group['USI']
 
-            basename_parquet = Path(path_parquet).parts[-1].split('.')[0]
+                # Map filenames to species/instrument from SDRF
+                filenames = row_group['reference_file_name']
+                sample_info = filenames.map(sample_info_dict)
+                charges = 'charge' + row_group['charge'].astype(str)
+                mgf_group_df['mgf_file_path'] = sample_info.apply(lambda x: '/'.join(x) if isinstance(x, list) else str(x)) + '/' + charges + '/mgf files'
 
-            for group, group_df in mgf_group_df.groupby('mgf_file_path'):
-                base_mgf_path = group
-                file_index = file_index_dict[base_mgf_path] + 1
-                mgf_file_path = f"{group}/{basename_parquet}_{file_index}.mgf"
+                for group, group_df in mgf_group_df.groupby('mgf_file_path'):
+                    base_mgf_path = group
+                    file_index = file_index_dict[base_mgf_path] + 1
+                    mgf_file_path = f"{group}/{basename_parquet}_{file_index}.mgf"
 
-                if write_count_dict[group] + group_df.shape[0] <= SPECTRA_NUM:
-                    mgf_order_range = range(write_count_dict[group],
-                                            write_count_dict[group] + group_df.shape[0],
-                                            1)
-                    cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
-                                                                  mgf_order_range)
-                    cluster_res_lst.append(cluster_res_df)
-                    write_count_dict[group] += group_df.shape[0]
-                else:
-                    remain_num = SPECTRA_NUM - write_count_dict[group]
-                    if remain_num > 0:
-                        group_df_remain = group_df.head(remain_num)
+                    if write_count_dict[group] + group_df.shape[0] <= spectra_num:
                         mgf_order_range = range(write_count_dict[group],
-                                                write_count_dict[group] + group_df_remain.shape[0], 1)
+                                                write_count_dict[group] + group_df.shape[0],
+                                                1)
                         cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
                                                                       mgf_order_range)
                         cluster_res_lst.append(cluster_res_df)
-                        write_count_dict[group] += group_df_remain.shape[0]
+                        write_count_dict[group] += group_df.shape[0]
+                    else:
+                        remain_num = spectra_num - write_count_dict[group]
+                        if remain_num > 0:
+                            group_df_remain = group_df.head(remain_num)
+                            mgf_order_range = range(write_count_dict[group],
+                                                    write_count_dict[group] + group_df_remain.shape[0], 1)
+                            cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                                                                          mgf_order_range)
+                            cluster_res_lst.append(cluster_res_df)
+                            write_count_dict[group] += group_df_remain.shape[0]
 
-                    file_index_dict[base_mgf_path] += 1
-                    write_count_dict[group] = 0
+                        file_index_dict[base_mgf_path] += 1
+                        write_count_dict[group] = 0
 
-                    mgf_file_path = (f"{base_mgf_path}/{Path(path_parquet).parts[-1].split('.')[0]}_"
-                                     f"{file_index_dict[base_mgf_path] + 1}.mgf")
+                        mgf_file_path = (f"{base_mgf_path}/{basename_parquet}_"
+                                         f"{file_index_dict[base_mgf_path] + 1}.mgf")
 
-                    group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
-                    mgf_order_range = range(write_count_dict[group],
-                                            write_count_dict[group] + group_df_tail.shape[0], 1)
-                    cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
-                                                                  mgf_order_range)
-                    cluster_res_lst.append(cluster_res_df)
-                    write_count_dict[group] += group_df_tail.shape[0]
+                        group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
+                        mgf_order_range = range(write_count_dict[group],
+                                                write_count_dict[group] + group_df_tail.shape[0], 1)
+                        cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                                                                      mgf_order_range)
+                        cluster_res_lst.append(cluster_res_df)
+                        write_count_dict[group] += group_df_tail.shape[0]
 
         return self.combine_res_lst(cluster_res_lst)
 
