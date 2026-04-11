@@ -80,7 +80,10 @@ class MspUtil:
         #     name_val = name_val = ';'.join([i.split(':')[-1] for i in row['usi'].split(';')])
         name_val = row['peptidoform']
         mw_val = row['pepmass']
-        num_peaks_val = len(ast.literal_eval(row['mz_array']))
+        mz_arr = row['mz_array']
+        if isinstance(mz_arr, str):
+            mz_arr = ast.literal_eval(mz_arr)
+        num_peaks_val = len(mz_arr)
         comment_val = f'clusterID={MspUtil().usi_to_uuid(row["usi"])} Nreps={row["Nreps"]} PEP={row["posterior_error_probability"]}'
         mz_intensity_val = Parquet2Mgf.get_mz_intensity_str(row['mz_array'], row['intensity_array'])
 

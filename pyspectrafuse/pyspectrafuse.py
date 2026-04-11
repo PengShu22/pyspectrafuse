@@ -1,6 +1,7 @@
 import click
 from pyspectrafuse.commands.quantmsio2mgf import quantmsio2mgf
 from pyspectrafuse.commands.spectrum2msp import spectrum2msp
+from pyspectrafuse.commands.cluster2parquet import cluster2parquet
 from pyspectrafuse import __version__
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -20,6 +21,7 @@ def cli():
 
 cli.add_command(quantmsio2mgf)
 cli.add_command(spectrum2msp)
+cli.add_command(cluster2parquet)
 
 
 def main():
