@@ -1,12 +1,10 @@
 """Generate MaRaCluster-compatible .dat binary files directly from parquet.
 
-Bypasses MGF entirely: reads QPX .psm.parquet → writes compact .dat binary
-structs (100 bytes per spectrum). MaRaCluster can then skip its Step 1
-(file conversion) and start directly from the pvalue computation step.
+Reads QPX .psm.parquet → writes compact .dat binary structs (100 bytes per
+spectrum). MaRaCluster's -D flag reads pre-existing .dat files and starts
+directly from the pvalue computation step.
 
-Size comparison for 1M PSMs:
-  - MGF text:  ~3.4 GB
-  - .dat binary: ~100 MB  (34x smaller)
+Size: ~100 bytes/spectrum (1M PSMs = ~100 MB, 500M PSMs = ~50 GB)
 
 The .dat format is a flat array of Spectrum structs:
   struct Spectrum {  // 100 bytes total
@@ -169,9 +167,28 @@ def parquet_to_dat(
                 if df.empty:
                     continue
 
-            for row_idx, (_, row) in enumerate(df.iterrows()):
-                mz_arr = row.get('mz_array')
-                int_arr = row.get('intensity_array')
+            # Vectorized column access
+            mz_arrays = df['mz_array'].values if 'mz_array' in df.columns else None
+            int_arrays = df['intensity_array'].values if 'intensity_array' in df.columns else None
+            if mz_arrays is None or int_arrays is None:
+                skipped += len(df)
+                continue
+
+            charges = df['charge'].values if 'charge' in df.columns else np.zeros(len(df), dtype=np.int32)
+            obs_mz = df['observed_mz'].values if 'observed_mz' in df.columns else None
+            calc_mz = df['calculated_mz'].values if 'calculated_mz' in df.columns else None
+            runs = df['run_file_name'].values if 'run_file_name' in df.columns else [''] * len(df)
+            peps = df['peptidoform'].values if 'peptidoform' in df.columns else [''] * len(df)
+            scans = df['scan'].values if 'scan' in df.columns else [0] * len(df)
+
+            # Pre-allocate buffers for batch writing
+            dat_buf = bytearray()
+            scaninfo_buf = bytearray()
+            title_lines = []
+
+            for i in range(len(df)):
+                mz_arr = mz_arrays[i]
+                int_arr = int_arrays[i]
                 if mz_arr is None or int_arr is None:
                     skipped += 1
                     continue
@@ -183,27 +200,19 @@ def parquet_to_dat(
                     skipped += 1
                     continue
 
-                charge = int(row.get('charge', 0))
+                charge = int(charges[i])
                 if charge <= 0:
                     skipped += 1
                     continue
 
                 # Precursor m/z: prefer observed_mz, fall back to calculated_mz
-                prec_mz = row.get('observed_mz')
+                prec_mz = obs_mz[i] if obs_mz is not None else None
                 if prec_mz is None or np.isnan(prec_mz):
-                    prec_mz = row.get('calculated_mz', 0.0)
+                    prec_mz = calc_mz[i] if calc_mz is not None else 0.0
                 prec_mz = float(prec_mz)
 
                 # Neutral mass for peak filtering
                 prec_mass = prec_mz * charge - PROTON_MASS * (charge - 1)
-
-                # Retention time — set to 0.0 to match MaRaCluster's MGF behavior
-                # (MGF doesn't carry RT, so MaRaCluster always sees 0.0)
-                rt = 0.0
-
-                # Scan number — use sequential 0-based index, matching MaRaCluster's
-                # MGF behavior (it assigns scan numbers 0, 1, 2, ... in file order)
-                scannr = written
 
                 # Bin the spectrum
                 peak_bins = _bin_spectrum(mz_arr, int_arr, prec_mass)
@@ -211,18 +220,15 @@ def parquet_to_dat(
                     skipped += 1
                     continue
 
-                # Write Spectrum struct
-                f_dat.write(_pack_spectrum(
-                    file_idx, scannr, charge, prec_mz, rt, peak_bins))
+                scannr = written
 
-                # Write ScanInfo struct
-                f_scaninfo.write(_pack_scaninfo(
+                # Buffer writes instead of per-row I/O
+                dat_buf.extend(_pack_spectrum(
+                    file_idx, scannr, charge, prec_mz, 0.0, peak_bins))
+                scaninfo_buf.extend(_pack_scaninfo(
                     file_idx, scannr, prec_mz, prec_mz))
 
-                # Write title line — maps sequential index → original spectrum identity
-                run = row.get('run_file_name', '')
-                pep = row.get('peptidoform', '')
-                orig_scan = row.get('scan')
+                orig_scan = scans[i]
                 if orig_scan is not None:
                     if isinstance(orig_scan, (list, np.ndarray)):
                         orig_scan = int(orig_scan[0]) if len(orig_scan) > 0 else 0
@@ -230,10 +236,17 @@ def parquet_to_dat(
                         orig_scan = int(orig_scan)
                 else:
                     orig_scan = 0
-                title = f"id=mzspec::{run}:scan:{orig_scan}:{pep}/{charge}"
-                f_titles.write(f"{file_idx}\t{scannr}\t{title}\n")
+                run = runs[i] if runs[i] is not None else ''
+                pep = peps[i] if peps[i] is not None else ''
+                title_lines.append(f"{file_idx}\t{scannr}\tid=mzspec::{run}:scan:{orig_scan}:{pep}/{charge}\n")
 
                 written += 1
+
+            # Flush batch buffers
+            if dat_buf:
+                f_dat.write(dat_buf)
+                f_scaninfo.write(scaninfo_buf)
+                f_titles.writelines(title_lines)
 
     dat_size = Path(dat_path).stat().st_size
     logger.info(f"Wrote {written} spectra to {dat_path} "
