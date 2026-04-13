@@ -29,7 +29,7 @@ def sample_sdrf_file(temp_dir):
     sdrf_path = Path(temp_dir) / "sample.sdrf.tsv"
     sdrf_data = pd.DataFrame({
         'comment[data file]': ['file1.mzML', 'file2.mzML'],
-        'Characteristics[organism]': ['Homo sapiens', 'Homo sapiens'],
+        'characteristics[organism]': ['Homo sapiens', 'Homo sapiens'],
         'comment[instrument]': ['NT=Orbitrap Fusion Lumos;', 'NT=Orbitrap Fusion Lumos;']
     })
     sdrf_data.to_csv(sdrf_path, sep='\t', index=False)
