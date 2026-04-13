@@ -10,7 +10,7 @@ Python library and CLI for the [spectrafuse](https://github.com/bigbio/spectrafu
 
 ## Features
 
-- **Parquet to Dat Conversion**: Convert QPX parquet files directly to MaRaCluster's binary `.dat` format (15x smaller than MGF, ~100 bytes/spectrum)
+- **Parquet to Dat Conversion**: Convert QPX parquet files directly to MaRaCluster's binary `.dat` format (~100 bytes/spectrum)
 - **Cluster DB Builder**: Generate `cluster_metadata.parquet` and `psm_cluster_membership.parquet` from MaRaCluster output
 - **Consensus Spectrum Generation**: Multiple strategies for generating consensus spectra from clustered data:
   - Best spectrum selection (lowest PEP/q-value)
@@ -69,7 +69,7 @@ pyspectrafuse convert-dat \
     -c 2  # optional: filter by charge state
 ```
 
-The `.dat` format is 15x smaller than MGF and MaRaCluster reads it directly with the `-D` flag, skipping its own file conversion step.
+MaRaCluster reads `.dat` files directly with the `-D` flag, skipping its own file conversion step.
 
 #### Build Cluster DB
 
@@ -126,7 +126,7 @@ pyspectrafuse incremental merge-clusters \
 
 #### Convert MSNet to QPX
 
-One-time data preparation for legacy MSNet parquet files:
+One-time data preparation to convert MSNet parquet files to QPX format:
 
 ```bash
 pyspectrafuse convert-to-qpx \
@@ -167,7 +167,7 @@ pyspectrafuse/
 │   ├── build_cluster_db.py         # build-cluster-db command
 │   ├── parquet2dat.py              # convert-dat command
 │   ├── cluster2parquet.py          # cluster-parquet command
-│   ├── quantmsio2mgf.py            # convert-mgf command (legacy)
+│   ├── quantmsio2mgf.py            # convert-mgf command
 │   ├── spectrum2msp.py             # msp command
 │   ├── incremental.py              # incremental sub-commands
 │   └── convert_msnet_to_qpx.py     # convert-to-qpx command
@@ -175,7 +175,7 @@ pyspectrafuse/
 │   ├── qpx_metadata.py             # QPX metadata reader
 │   ├── parquet_utils.py            # Parquet file handling
 │   ├── msp_utils.py                # MSP format utilities
-│   └── sdrf_utils.py               # SDRF file parsing (legacy)
+│   └── sdrf_utils.py               # SDRF file parsing
 ├── consensus_strategy/             # Consensus spectrum strategies
 │   ├── best_spetrum_strategy.py
 │   ├── binning_strategy.py
@@ -185,7 +185,7 @@ pyspectrafuse/
 │   ├── representative_mgf.py
 │   ├── resolve_clusters.py
 │   └── merge_results.py
-└── mgf_convert/                    # MGF conversion (legacy)
+└── mgf_convert/                    # MGF conversion utilities
 ```
 
 ## Testing
