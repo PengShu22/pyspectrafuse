@@ -26,7 +26,8 @@ class SdrfUtil:
             raise FileNotFoundError(f'There is no sdrf file in {folder}')
 
     @staticmethod
-    def get_metadata_dict_from_sdrf(sdrf_folder: str, fill_unknown=True):
+    def get_metadata_dict_from_sdrf(sdrf_folder: str, fill_unknown=True,
+                                     skip_instrument: bool = False):
         """
         从SDRF DataFrame中构建样本信息字典：{数据文件名: [物种, 仪器名称]}
 
@@ -68,10 +69,14 @@ class SdrfUtil:
             sdrf_feature_df[['characteristics[organism]', 'comment[instrument]']] = \
                 sdrf_feature_df[['characteristics[organism]', 'comment[instrument]']].fillna('Unknown')
 
+        if skip_instrument:
+            sdrf_feature_df['comment[instrument]'] = 'all_instruments'
+
         sdrf_feature_df['organism_instrument'] = sdrf_feature_df[
             ['characteristics[organism]', 'comment[instrument]']
         ].values.tolist()
-        sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].apply(lambda x: x.replace('.raw', ''))
+        sdrf_feature_df['comment[data file]'] = sdrf_feature_df['comment[data file]'].apply(
+            lambda x: re.sub(r'\.(raw|mzML|d|wiff|RAW)$', '', x))
 
         sample_info_dict = sdrf_feature_df.set_index('comment[data file]')['organism_instrument'].to_dict()
 

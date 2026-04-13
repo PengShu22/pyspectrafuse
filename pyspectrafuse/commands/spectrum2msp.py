@@ -1,3 +1,4 @@
+import glob
 import logging
 from typing import List, Optional
 import click
@@ -19,17 +20,37 @@ logger = logging.getLogger(__name__)
 
 def find_target_ext_files(directory: str, extensions: str) -> List[str]:
     """Find files with specified extension in directory tree.
-    
+
     Args:
         directory: Root directory to search
         extensions: File extension to match (e.g., '.parquet')
-        
+
     Returns:
-        List of file paths matching the extension (excluding 'psm' files)
+        List of file paths matching the extension, excluding generated output
+        files (psm_cluster_membership, cluster_metadata) and output directories
+        (cluster_db/, msp/, mgf_output/).
     """
-    path = Path(directory)
-    res = [str(file) for file in path.rglob(f'*{extensions}') 
-           if file.is_file() and 'psm' not in file.name]
+    # Directories that contain pipeline outputs, not inputs
+    exclude_dirs = {'cluster_db', 'msp', 'mgf_output'}
+    exclude_names = {'psm_cluster_membership', 'cluster_metadata'}
+    # QPX metadata parquets are not PSM data
+    exclude_suffixes = {'.run.parquet', '.sample.parquet',
+                        '.dataset.parquet', '.ontology.parquet'}
+
+    res = []
+    # Use glob.glob (follows symlinks) instead of Path.rglob (does not)
+    for path_str in glob.glob(str(Path(directory) / f'**/*{extensions}'), recursive=True):
+        file = Path(path_str)
+        if not file.is_file():
+            continue
+        stem = file.stem
+        if any(ex in stem for ex in exclude_names):
+            continue
+        if any(part in exclude_dirs for part in file.parts):
+            continue
+        if any(str(file).endswith(s) for s in exclude_suffixes):
+            continue
+        res.append(str(file))
     return res
 
 
@@ -163,12 +184,9 @@ def spectrum2msp(parquet_dir: str, method_type: str, cluster_tsv_file: str,
         ValueError: If method_type is invalid
     """
     # Find required files
-    sdrf_files = find_target_ext_files(parquet_dir, '.sdrf.tsv')
-    if not sdrf_files:
-        raise FileNotFoundError(f"No SDRF file found in {parquet_dir}")
-    path_sdrf = sdrf_files[0]
-    logger.info(f"SDRF file path: {path_sdrf}")
-    
+    from pyspectrafuse.common.qpx_metadata import get_metadata_dict
+    sample_info_dict = get_metadata_dict(parquet_dir)
+
     path_parquet_lst = find_target_ext_files(parquet_dir, '.parquet')
     if not path_parquet_lst:
         raise FileNotFoundError(f"No parquet files found in {parquet_dir}")
@@ -177,7 +195,7 @@ def spectrum2msp(parquet_dir: str, method_type: str, cluster_tsv_file: str,
     # Setup output directory and file
     output_dir = Path(parquet_dir) / 'msp' / species / instrument / charge
     output_dir.mkdir(parents=True, exist_ok=True)
-    basename = ParquetPathHandler(parquet_dir).get_item_info()
+    basename = ParquetPathHandler(path_parquet_lst[0]).get_item_info()
     output = output_dir / f"{basename}_{uuid.uuid4()}.msp"
 
     # Load cluster results
@@ -188,7 +206,7 @@ def spectrum2msp(parquet_dir: str, method_type: str, cluster_tsv_file: str,
     # Combine cluster info with parquet data
     df = CombineCluster2Parquet().inject_cluster_info(
         path_parquet=path_parquet_lst,
-        path_sdrf=path_sdrf,
+        sample_info_dict=sample_info_dict,
         clu_map_dict=cluster_res_dict)
 
     # Create consensus strategy and generate spectra

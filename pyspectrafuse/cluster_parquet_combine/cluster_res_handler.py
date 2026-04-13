@@ -42,8 +42,7 @@ class ClusterResHandler:
                     df['mgf_path'] = df['mgf_path'] + '/' + df['index'].astype(str)
                     charge_df_lst.append(df)
 
-                charge_df = pd.DataFrame(np.vstack(charge_df_lst), 
-                                        columns=['mgf_path', 'index', 'cluster_accession'])
+                charge_df = pd.concat(charge_df_lst, ignore_index=True)
                 charge_df = charge_df.loc[:, ['mgf_path', 'cluster_accession']]
                 mgf_ind_clu_acc_dict = pd.Series(
                     charge_df.cluster_accession.values, 
@@ -115,8 +114,10 @@ class ClusterResHandler:
         clu_df.dropna(axis=0, inplace=True)  # Remove empty rows
 
         sample_info = f"{species}/{instrument}/{charge}"
-        # Vectorized string operations - much faster than apply()
-        clu_df.loc[:, "mgf_path"] = sample_info + "/mgf files/" + clu_df["mgf_path"]
+        # Use basename of MGF path to match how inject_cluster_info constructs lookup keys.
+        # MaRaCluster TSV may contain full container paths (e.g. /mgf/file.mgf) when run
+        # via Docker, but inject_cluster_info always uses just the filename.
+        clu_df.loc[:, "mgf_path"] = sample_info + "/mgf files/" + clu_df["mgf_path"].apply(lambda p: Path(p).name)
         clu_df['mgf_path'] = clu_df['mgf_path'] + '/' + clu_df['index'].astype(str)
         clu_df = clu_df.loc[:, ['mgf_path', 'cluster_accession']]
         mgf_ind_clu_acc_dict = pd.Series(clu_df.cluster_accession.values, index=clu_df.mgf_path).to_dict()

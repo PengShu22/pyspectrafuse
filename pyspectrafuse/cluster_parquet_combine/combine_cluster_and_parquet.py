@@ -6,7 +6,6 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from collections import defaultdict
 from pyspectrafuse.common.constant import UseCol, ParquetSchemaAdapter
-from pyspectrafuse.common.sdrf_utils import SdrfUtil
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 
 logger = logging.getLogger(__name__)
@@ -46,12 +45,21 @@ class CombineCluster2Parquet:
         return clu_df
 
     def inject_cluster_info(self, path_parquet: Union[str, List[str]],
-                           clu_map_dict: Dict[str, str], path_sdrf: str,
+                           clu_map_dict: Dict[str, str],
+                           sample_info_dict: Dict[str, list],
                            spectra_num: int = 1000000, batch_size: int = 200000) -> pd.DataFrame:
         """Inject cluster accession info into parquet spectrum data.
 
         Supports a single parquet path or a list of parquet files. All files
         are processed and the results are concatenated.
+
+        Args:
+            path_parquet: Path(s) to PSM parquet files.
+            clu_map_dict: Cluster assignment dict from MaRaCluster.
+            sample_info_dict: {run_file_name: [species, instrument]} metadata dict.
+                Produced by qpx_metadata.get_metadata_dict() or equivalent.
+            spectra_num: Max spectra per MGF file partition.
+            batch_size: Batch size for reading parquet files.
         """
         # Normalize to list
         if isinstance(path_parquet, str):
@@ -60,7 +68,6 @@ class CombineCluster2Parquet:
             raise ValueError("path_parquet list is empty")
 
         cluster_res_lst = []
-        sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(path_sdrf)
 
         write_count_dict = defaultdict(int)
         file_index_dict = defaultdict(int)
@@ -69,7 +76,8 @@ class CombineCluster2Parquet:
             logger.info(f"Injecting cluster info from: {parquet_path}")
             parquet_file = pq.ParquetFile(parquet_path)
             basename = ParquetPathHandler(parquet_path).get_item_info()
-            basename_parquet = Path(parquet_path).stem
+            # Use same basename extraction as MGF converter: strip all extensions
+            basename_parquet = Path(parquet_path).name.split('.')[0]
 
             # Determine which columns exist in this parquet file
             parquet_columns = [f.name for f in parquet_file.schema_arrow]
@@ -102,8 +110,18 @@ class CombineCluster2Parquet:
                 # Map filenames to species/instrument from SDRF
                 filenames = row_group['reference_file_name']
                 sample_info = filenames.map(sample_info_dict)
+
+                # Check for unmapped filenames (missing from SDRF)
+                unmapped = sample_info.isna()
+                if unmapped.any():
+                    missing = filenames[unmapped].unique().tolist()
+                    logger.warning(f"SDRF lookup failed for {len(missing)} filenames: {missing[:5]}")
+                    sample_info = sample_info.fillna('Unknown/Unknown')
+
                 charges = 'charge' + row_group['charge'].astype(str)
-                mgf_group_df['mgf_file_path'] = sample_info.apply(lambda x: '/'.join(x) if isinstance(x, list) else str(x)) + '/' + charges + '/mgf files'
+                mgf_group_df['mgf_file_path'] = sample_info.apply(
+                    lambda x: '/'.join(x) if isinstance(x, list) else str(x)
+                ) + '/' + charges + '/mgf files'
 
                 for group, group_df in mgf_group_df.groupby('mgf_file_path'):
                     base_mgf_path = group
@@ -124,7 +142,7 @@ class CombineCluster2Parquet:
                             group_df_remain = group_df.head(remain_num)
                             mgf_order_range = range(write_count_dict[group],
                                                     write_count_dict[group] + group_df_remain.shape[0], 1)
-                            cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                            cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df_remain, mgf_file_path,
                                                                           mgf_order_range)
                             cluster_res_lst.append(cluster_res_df)
                             write_count_dict[group] += group_df_remain.shape[0]
@@ -138,7 +156,7 @@ class CombineCluster2Parquet:
                         group_df_tail = group_df.tail(group_df.shape[0] - remain_num)
                         mgf_order_range = range(write_count_dict[group],
                                                 write_count_dict[group] + group_df_tail.shape[0], 1)
-                        cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df, mgf_file_path,
+                        cluster_res_df = self.map_strategy_to_cluster(clu_map_dict, group_df_tail, mgf_file_path,
                                                                       mgf_order_range)
                         cluster_res_lst.append(cluster_res_df)
                         write_count_dict[group] += group_df_tail.shape[0]
@@ -148,8 +166,6 @@ class CombineCluster2Parquet:
     def combine_res_lst(self, lst: list) -> pd.DataFrame:
         if not lst:
             return pd.DataFrame()
-        df_num = len(lst)
-        if df_num > 1:
-            return pd.DataFrame(np.vstack(lst), columns=lst[0].columns)
-        else:
+        if len(lst) == 1:
             return lst[0]
+        return pd.concat(lst, ignore_index=True)

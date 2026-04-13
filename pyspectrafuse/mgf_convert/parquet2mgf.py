@@ -6,10 +6,9 @@ import ast
 from pathlib import Path
 from collections import defaultdict
 import logging
-from pyspectrafuse.common.constant import UseCol
+from pyspectrafuse.common.constant import UseCol, ParquetSchemaAdapter
 import os
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
-from pyspectrafuse.common.sdrf_utils import SdrfUtil
 
 logger = logging.getLogger(__name__)
 
@@ -92,17 +91,18 @@ class Parquet2Mgf:
         """
         return row['USI'].split(':')[2]
 
-    def convert_to_mgf(self, parquet_path: str, sdrf_path: str, output_path: str,
-                       batch_size: int, spectra_capacity: int) -> None:
-        """
-         A single parquet file is read in blocks, and then grouped by species, instrument, charge,
-         and converted to parquet files
-        :param sdrf_path: sdrf path
-        :param parquet_path: The full path to the parquet file
-        :param output_path: output dir
-        :param batch_size: default size is 10w
-        :param spectra_capacity: default size is 100w
-        :return:
+    def convert_to_mgf(self, parquet_path: str, sample_info_dict: dict, output_path: str,
+                       batch_size: int, spectra_capacity: int,
+                       skip_instrument: bool = False) -> None:
+        """Convert a parquet file to MGF format, grouped by species/instrument/charge.
+
+        Args:
+            parquet_path: Path to the PSM parquet file.
+            sample_info_dict: {run_file_name: [species, instrument]} metadata dict.
+            output_path: Output directory for MGF files.
+            batch_size: Batch size for reading parquet (default 100000).
+            spectra_capacity: Max spectra per MGF file (default 1000000).
+            skip_instrument: If True, all runs use 'all_instruments'.
         """
         Path(output_path).mkdir(parents=True, exist_ok=True)
         # loading Parquet file
@@ -113,28 +113,54 @@ class Parquet2Mgf:
         SPECTRA_NUM = spectra_capacity  # The spectra capacity of one mgf
         BATCH_SIZE = batch_size  # The batch size of each parquet pass
 
+        # Determine which columns to read (supports both MSNet and QPX schemas)
+        parquet_columns = [f.name for f in parquet_file.schema_arrow]
+        # All candidate column names from both formats
+        mgf_candidates = UseCol.PARQUET_COL_TO_MGF.value + ['charge', 'observed_mz', 'run_file_name', 'peptidoform']
+        read_cols = ParquetSchemaAdapter.available_columns(parquet_columns, mgf_candidates)
+
         for parquet_batch in parquet_file.iter_batches(batch_size=BATCH_SIZE,
-                                                       columns=UseCol.PARQUET_COL_TO_MGF.value):  # columns=UseCol.PARQUET_COL_TO_MGF.value
+                                                       columns=read_cols):
             mgf_group_df = pd.DataFrame()
             row_group = parquet_batch.to_pandas()
-            # spectrum
-            row_group['USI'] = row_group.apply(
-                lambda row: Parquet2Mgf.get_usi(row, dataset_id=ParquetPathHandler(parquet_path).get_item_info()),
-                axis=1  # 关键：axis=1表示按行应用函数（默认是按列）
-            )
+
+            # Normalize column names (handles both MSNet and QPX schemas)
+            row_group = ParquetSchemaAdapter.adapt(row_group)
+
+            # Ensure canonical column names exist for USI and spectrum generation
+            # After adapt(): charge, pepmass (observed_mz), reference_file_name (run_file_name)
+            if 'precursor_charge' in row_group.columns and 'charge' not in row_group.columns:
+                row_group = row_group.rename(columns={'precursor_charge': 'charge'})
+            if 'exp_mass_to_charge' in row_group.columns and 'pepmass' not in row_group.columns:
+                row_group = row_group.rename(columns={'exp_mass_to_charge': 'pepmass'})
+
+            # Build USI: need reference_file_name, scan, sequence, charge
+            dataset_id = ParquetPathHandler(parquet_path).get_item_info()
+            row_group['USI'] = ('mzspec:' + dataset_id + ':' +
+                                row_group['reference_file_name'].astype(str) + ':scan:' +
+                                row_group['scan'].astype(str) + ':' +
+                                row_group['sequence'].astype(str) + '/' +
+                                row_group['charge'].astype(str))
+
+            # Rename pepmass to exp_mass_to_charge for get_spectrum compatibility
+            if 'pepmass' in row_group.columns and 'exp_mass_to_charge' not in row_group.columns:
+                row_group['exp_mass_to_charge'] = row_group['pepmass']
+
             row_group = row_group.loc[:,
-                        ['USI', 'sequence', 'mz_array', 'intensity_array', 'precursor_charge', 'exp_mass_to_charge']]
-            row_group = row_group.rename(columns={'precursor_charge': 'charge'})
+                        ['USI', 'sequence', 'mz_array', 'intensity_array', 'charge', 'exp_mass_to_charge']]
 
             mgf_group_df['spectrum'] = row_group.apply(
                 lambda row: Parquet2Mgf.get_spectrum(row, ParquetPathHandler(parquet_path).get_item_info()), axis=1)
 
-            # read sdrf file,get dict
-            sample_info_dict = SdrfUtil.get_metadata_dict_from_sdrf(sdrf_path)
+            def _get_mgf_path(row):
+                fname = Parquet2Mgf.get_filename_from_usi(row)
+                info = sample_info_dict.get(fname)
+                if info is None:
+                    logger.warning(f"No metadata for run file: {fname}")
+                    info = ['Unknown', 'Unknown']
+                return '/'.join(info + ['charge' + str(row["charge"]), 'mgf files'])
 
-            mgf_group_df['mgf_file_path'] = row_group.apply(
-                lambda row: '/'.join(sample_info_dict.get(Parquet2Mgf.get_filename_from_usi(row)) +
-                                     ['charge' + str(row["charge"]), 'mgf files']), axis=1)
+            mgf_group_df['mgf_file_path'] = row_group.apply(_get_mgf_path, axis=1)
 
             # Pre-compute basename to avoid repeated string operations
             basename_parquet = Path(parquet_path).parts[-1].split('.')[0]
@@ -165,13 +191,20 @@ class Parquet2Mgf:
                     Parquet2Mgf.write2mgf(mgf_file_path, '\n\n'.join(group_df_tail["spectrum"]))
                     write_count_dict[group] += group_df_tail.shape[0]
 
-    def convert_to_mgf_task(self, args: Tuple[str, str, str, int, int]) -> None:
+    def convert_to_mgf_task(self, args) -> None:
         """Task wrapper for parallel processing.
 
         Args:
-            args: Tuple of (parquet_file_path, sdrf_file_path, res_file_path, batch_size, spectra_capacity)
+            args: Tuple of (parquet_file_path, sample_info_dict, res_file_path,
+                  batch_size, spectra_capacity) or with optional 6th element
+                  skip_instrument (bool).
         """
-        parquet_file_path, sdrf_file_path, res_file_path, batch_size, spectra_capacity = args
+        if len(args) >= 6:
+            parquet_file_path, sample_info_dict, res_file_path, batch_size, spectra_capacity, skip_instrument = args[:6]
+        else:
+            parquet_file_path, sample_info_dict, res_file_path, batch_size, spectra_capacity = args
+            skip_instrument = False
         logger.info(f"Converting {os.path.basename(parquet_file_path)} to MGF format...")
-        self.convert_to_mgf(parquet_file_path, sdrf_file_path, res_file_path,
-                            batch_size, spectra_capacity)
+        self.convert_to_mgf(parquet_file_path, sample_info_dict, res_file_path,
+                            batch_size, spectra_capacity,
+                            skip_instrument=skip_instrument)
