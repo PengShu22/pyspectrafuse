@@ -6,19 +6,20 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Python library with utility scripts for spectrafuse pipeline - a tool for processing and converting mass spectrometry data formats, generating consensus spectra, and handling cluster-based analysis workflows.
+Python library and CLI for the [spectrafuse](https://github.com/bigbio/spectrafuse) pipeline -- spectral clustering and consensus library generation for mass spectrometry proteomics data.
 
 ## Features
 
-- **Parquet to MGF Conversion**: Convert parquet files to MGF format with parallel processing support
+- **Parquet to Dat Conversion**: Convert QPX parquet files directly to MaRaCluster's binary `.dat` format (15x smaller than MGF, ~100 bytes/spectrum)
+- **Cluster DB Builder**: Generate `cluster_metadata.parquet` and `psm_cluster_membership.parquet` from MaRaCluster output
 - **Consensus Spectrum Generation**: Multiple strategies for generating consensus spectra from clustered data:
-  - Best spectrum selection
-  - Most similar spectrum
+  - Best spectrum selection (lowest PEP/q-value)
   - Binning-based consensus
+  - Most similar spectrum
   - Average spectrum aggregation
-- **MSP Format Export**: Export spectra to MSP (MassBank) format
-- **SDRF File Handling**: Automatic detection and parsing of SDRF (Sample and Data Relationship Format) files
-- **Cluster Analysis**: Integration with MaRaCluster output for spectrum clustering workflows
+- **Incremental Clustering**: Add new datasets to existing cluster DBs without re-clustering
+- **QPX Metadata Handling**: Reads species/instrument from `.run.parquet` + `.sample.parquet` (QPX format)
+- **MSP Format Export**: Export consensus spectra to MSP (MassBank) format
 
 ## Installation
 
@@ -31,17 +32,11 @@ pip install pyspectrafuse
 ### Using conda
 
 ```bash
-# Create environment from environment.yml
 conda env create -f environment.yml
 conda activate pyspectrafuse
-
-# Or install directly
-conda install -c conda-forge pyspectrafuse
 ```
 
 ### Development Installation
-
-For development, install in editable mode with test dependencies:
 
 ```bash
 git clone https://github.com/bigbio/pyspectrafuse.git
@@ -63,86 +58,137 @@ pip install -e ".[test]"
 
 ### Command Line Interface
 
-The package provides a command-line interface with two main commands:
+#### Convert Parquet to Dat (recommended)
 
-#### Convert Parquet to MGF
-
-Convert parquet files to MGF format:
+Convert QPX parquet files directly to MaRaCluster's binary `.dat` format:
 
 ```bash
-pyspectrafuse convert-mgf \
-    --parquet_dir /path/to/parquet/files \
-    --batch_size 100000 \
-    --spectra_capacity 1000000 \
-    --task_parallel 4
+pyspectrafuse convert-dat \
+    -p /path/to/project/ \
+    -o dat_output/ \
+    -c 2  # optional: filter by charge state
 ```
 
-**Options:**
-- `--parquet_dir, -p`: Directory containing parquet files
-- `--batch_size, -b`: Batch size for each parquet pass (default: 100000)
-- `--spectra_capacity, -c`: Number of spectra per MGF file (default: 1000000)
-- `--task_parallel, -t`: Number of parallel conversion tasks (default: 1)
+The `.dat` format is 15x smaller than MGF and MaRaCluster reads it directly with the `-D` flag, skipping its own file conversion step.
 
-#### Generate MSP Format Files
+#### Build Cluster DB
 
-Generate MSP format files from clustered spectra:
+Generate cluster metadata and PSM membership parquets from MaRaCluster output:
+
+```bash
+pyspectrafuse build-cluster-db \
+    --cluster_tsv clusters_p30.tsv \
+    --scan_titles dat_output/project.psm_charge2.scan_titles.txt \
+    --parquet_dir /path/to/project/ \
+    --dataset_name PXD014877 \
+    --species "Homo sapiens" \
+    --instrument "Q Exactive HF" \
+    --charge charge2 \
+    --output_dir cluster_db/
+```
+
+#### Generate MSP Consensus Spectra
 
 ```bash
 pyspectrafuse msp \
     --parquet_dir /path/to/project \
-    --method_type average \
+    --method_type best \
     --cluster_tsv_file /path/to/cluster.tsv \
     --species "Homo sapiens" \
-    --instrument "Orbitrap Fusion Lumos" \
+    --instrument "Q Exactive HF" \
     --charge "charge2"
 ```
 
-**Consensus Methods:**
-- `best`: Select best spectrum based on posterior error probability
-- `most`: Most similar spectrum using similarity measures
-- `bin`: Binning-based consensus spectrum
-- `average`: Average spectrum aggregation
+**Consensus methods:** `best` (default), `bin`, `most`, `average`
 
-**Method-specific Options:**
+#### Incremental Clustering
 
-For `most` method:
-- `--sim`: Similarity measure (default: 'dot')
-- `--fragment_mz_tolerance`: Fragment m/z tolerance (default: 0.02)
+Add new datasets to an existing cluster DB:
 
-For `bin` method:
-- `--min_mz`: Minimum m/z (default: 100)
-- `--max_mz`: Maximum m/z (default: 2000)
-- `--bin_size`: Bin size in m/z (default: 0.02)
-- `--peak_quorum`: Peak quorum threshold (default: 0.25)
-- `--edge_case_threshold`: Edge case threshold (default: 0.5)
+```bash
+# Step 1: Extract representative spectra from existing clusters
+pyspectrafuse incremental extract-reps \
+    --cluster_metadata cluster_db/cluster_metadata.parquet \
+    --output_mgf reps.mgf
 
-For `average` method:
-- `--diff_thresh`: Minimum distance between MS/MS peak clusters (default: 0.01)
-- `--dyn_range`: Dynamic range (default: 1000)
-- `--min_fraction`: Minimum fraction of cluster spectra (default: 0.5)
-- `--pepmass`: Precursor mass calculation method (choices: 'naive_average', 'neutral_average', 'lower_median', default: 'lower_median')
-- `--msms_avg`: MS/MS averaging method (choices: 'naive', 'weighted', default: 'weighted')
+# Step 2: Merge new data with existing clusters
+pyspectrafuse incremental merge-clusters \
+    --cluster_tsv new_clusters.tsv \
+    --rep_mgf reps.mgf \
+    --existing_metadata cluster_db/cluster_metadata.parquet \
+    --existing_membership cluster_db/psm_cluster_membership.parquet \
+    --new_parquet_dir /path/to/new_project/ \
+    --species "Homo sapiens" \
+    --instrument "Q Exactive HF" \
+    --charge charge2 \
+    --method_type bin
+```
+
+#### Convert MSNet to QPX
+
+One-time data preparation for legacy MSNet parquet files:
+
+```bash
+pyspectrafuse convert-to-qpx \
+    --input data.parquet \
+    --sdrf data.sdrf.tsv \
+    --output data.psm.parquet
+```
 
 ### Python API
 
 ```python
+from pyspectrafuse.maracluster_dat import parquet_to_dat
+from pyspectrafuse.common.qpx_metadata import get_metadata_dict
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
-from pyspectrafuse.common.sdrf_utils import SdrfUtil
-from pyspectrafuse.common.msp_utils import MspUtil
 
-# Get parquet files
-parquet_files = ParquetPathHandler.iter_parquet_dir("/path/to/parquet")
+# Convert parquet to dat (recommended path)
+written, skipped, dat_path = parquet_to_dat(
+    'data/PXD014877/PXD014877.psm.parquet',
+    output_dir='dat_files/',
+    file_idx=0,
+    charge_filter=2,
+)
 
-# Get SDRF file path
-sdrf_path = SdrfUtil.get_sdrf_file_path("/path/to/project")
+# Get metadata from QPX parquet files
+metadata = get_metadata_dict('/path/to/project/')
 
-# Get metadata from SDRF
-metadata = SdrfUtil.get_metadata_dict_from_sdrf(sdrf_path)
+# List PSM parquet files
+parquet_files = list(ParquetPathHandler.iter_parquet_dir('/path/to/project/'))
+```
+
+## Project Structure
+
+```
+pyspectrafuse/
+├── maracluster_dat.py              # Parquet to .dat binary conversion
+├── cluster_parquet_combine/        # Cluster DB builder
+├── commands/                       # CLI command implementations
+│   ├── build_cluster_db.py         # build-cluster-db command
+│   ├── parquet2dat.py              # convert-dat command
+│   ├── cluster2parquet.py          # cluster-parquet command
+│   ├── quantmsio2mgf.py            # convert-mgf command (legacy)
+│   ├── spectrum2msp.py             # msp command
+│   ├── incremental.py              # incremental sub-commands
+│   └── convert_msnet_to_qpx.py     # convert-to-qpx command
+├── common/                         # Shared utilities
+│   ├── qpx_metadata.py             # QPX metadata reader
+│   ├── parquet_utils.py            # Parquet file handling
+│   ├── msp_utils.py                # MSP format utilities
+│   └── sdrf_utils.py               # SDRF file parsing (legacy)
+├── consensus_strategy/             # Consensus spectrum strategies
+│   ├── best_spetrum_strategy.py
+│   ├── binning_strategy.py
+│   ├── most_similar_strategy.py
+│   └── average_spectrum_strategy.py
+├── incremental/                    # Incremental clustering modules
+│   ├── representative_mgf.py
+│   ├── resolve_clusters.py
+│   └── merge_results.py
+└── mgf_convert/                    # MGF conversion (legacy)
 ```
 
 ## Testing
-
-Run the test suite:
 
 ```bash
 # Run all tests
@@ -155,42 +201,9 @@ pytest --cov=pyspectrafuse --cov-report=html
 pytest tests/test_parquet_utils.py
 ```
 
-Test coverage is currently at ~45% and includes tests for:
-- CLI commands
-- Utility classes (ParquetPathHandler, MspUtil, SdrfUtil)
-- Consensus spectrum strategies
-- Core functionality
-
-## Project Structure
-
-```
-pyspectrafuse/
-├── cluster_parquet_combine/    # Cluster and parquet combination utilities
-├── commands/                   # CLI command implementations
-│   ├── quantmsio2mgf.py       # Parquet to MGF conversion
-│   └── spectrum2msp.py        # MSP format generation
-├── common/                     # Common utilities
-│   ├── msp_utils.py           # MSP format utilities
-│   ├── parquet_utils.py        # Parquet file handling
-│   └── sdrf_utils.py          # SDRF file parsing
-├── consensus_strategy/         # Consensus spectrum strategies
-│   ├── average_spectrum_strategy.py
-│   ├── best_spetrum_strategy.py
-│   ├── binning_strategy.py
-│   └── most_similar_strategy.py
-└── mgf_convert/                # MGF conversion utilities
-```
-
-## Continuous Integration
-
-The project uses GitHub Actions for continuous integration:
-- Tests run on Python 3.8, 3.9, 3.10, and 3.11
-- Tests run on Ubuntu and macOS
-- Coverage reports are generated automatically
-
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+Contributions are welcome! Please feel free to submit a Pull Request.
 
 1. Fork the repository
 2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
@@ -211,7 +224,7 @@ If you use pyspectrafuse in your research, please cite:
   title = {pyspectrafuse: Python tools for spectrafuse pipeline},
   author = {BigBio Team},
   url = {https://github.com/bigbio/pyspectrafuse},
-  version = {0.0.2},
+  version = {0.0.4},
   year = {2024}
 }
 ```
