@@ -1,8 +1,8 @@
+import gzip
 import uuid
 import numpy as np
 from typing import Union, Dict, Any
 import pandas as pd
-from pyspectrafuse.mgf_convert.parquet2mgf import Parquet2Mgf
 import logging
 import ast
 
@@ -74,10 +74,6 @@ class MspUtil:
         Returns:
             MSP format string
         """
-        # if strategy_type == 'most' or strategy_type == 'best':
-        #     name_val = row['usi'].split(':')[-1]
-        # elif strategy_type == 'average' or strategy_type == 'bin':
-        #     name_val = name_val = ';'.join([i.split(':')[-1] for i in row['usi'].split(';')])
         name_val = row['peptidoform']
         mw_val = row['pepmass']
         mz_arr = row['mz_array']
@@ -85,7 +81,10 @@ class MspUtil:
             mz_arr = ast.literal_eval(mz_arr)
         num_peaks_val = len(mz_arr)
         comment_val = f'clusterID={MspUtil().usi_to_uuid(row["usi"])} Nreps={row["Nreps"]} PEP={row["posterior_error_probability"]}'
-        mz_intensity_val = Parquet2Mgf.get_mz_intensity_str(row['mz_array'], row['intensity_array'])
+        mz_intensity_val = '\n'.join(
+            f'{mz} {intensity}'
+            for mz, intensity in zip(row['mz_array'], row['intensity_array'])
+        )
 
         msp_str_fmt = (f"Name: {name_val}\n"
                        f"MW: {mw_val}\n"
@@ -98,14 +97,21 @@ class MspUtil:
     @staticmethod
     def write2msp(target_path: str, write_content: str) -> None:
         """Write MSP format content to file.
-        
+
+        If target_path ends with '.gz', output is gzip-compressed (append-safe:
+        gzip streams concatenate into a valid gzip file).
+
         Args:
             target_path: Path to output file
             write_content: Content to write (MSP format string)
         """
-        with open(target_path, mode='a') as f:
-            logger.info(f'Writing MSP format spectrum to file: {target_path}')
-            f.write(write_content)
+        logger.info(f'Writing MSP format spectrum to file: {target_path}')
+        if target_path.endswith('.gz'):
+            with gzip.open(target_path, mode='at') as f:
+                f.write(write_content)
+        else:
+            with open(target_path, mode='a') as f:
+                f.write(write_content)
 
 
 

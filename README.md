@@ -3,7 +3,7 @@
 [![Tests](https://github.com/bigbio/pyspectrafuse/actions/workflows/tests.yml/badge.svg)](https://github.com/bigbio/pyspectrafuse/actions/workflows/tests.yml)
 [![Containers](https://github.com/bigbio/pyspectrafuse/actions/workflows/pyspectrafuse-containers.yml/badge.svg)](https://github.com/bigbio/pyspectrafuse/actions/workflows/pyspectrafuse-containers.yml)
 [![codecov](https://codecov.io/gh/bigbio/pyspectrafuse/branch/master/graph/badge.svg)](https://codecov.io/gh/bigbio/pyspectrafuse)
-[![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 Python library and CLI for the [spectrafuse](https://github.com/bigbio/spectrafuse) pipeline -- spectral clustering and consensus library generation for mass spectrometry proteomics data.
@@ -11,15 +11,19 @@ Python library and CLI for the [spectrafuse](https://github.com/bigbio/spectrafu
 ## Features
 
 - **Parquet to Dat Conversion**: Convert QPX parquet files directly to MaRaCluster's binary `.dat` format (~100 bytes/spectrum)
-- **Cluster DB Builder**: Generate `cluster_metadata.parquet` and `psm_cluster_membership.parquet` from MaRaCluster output
-- **Consensus Spectrum Generation**: Multiple strategies for generating consensus spectra from clustered data:
-  - Best spectrum selection (lowest PEP/q-value)
-  - Binning-based consensus
-  - Most similar spectrum
-  - Average spectrum aggregation
+- **Cluster DB Builder**: Generate `cluster_metadata.parquet` and `psm_cluster_membership.parquet` from MaRaCluster output via DuckDB-powered joins
+- **Consensus Spectrum Generation**: Multiple strategies (best, bin, most, average)
 - **Incremental Clustering**: Add new datasets to existing cluster DBs without re-clustering
 - **QPX Metadata Handling**: Reads species/instrument from `.run.parquet` + `.sample.parquet` (QPX format)
 - **MSP Format Export**: Export consensus spectra to MSP (MassBank) format
+
+## Benchmarks
+
+| Dataset | PSMs | Clusters | Reduction | Purity | Time |
+|---------|------|----------|-----------|--------|------|
+| PXD014877 | 3,608 | 3,389 | 6.1% | 0.9996 | ~15s |
+| PXD004452 | 5,490,831 | 2,996,391 | 45.4% | 0.9984 | ~40 min |
+| 7 datasets | 11,797,213 | 6,912,696 | 41.4% | 0.9979 | ~87 min |
 
 ## Installation
 
@@ -27,13 +31,6 @@ Python library and CLI for the [spectrafuse](https://github.com/bigbio/spectrafu
 
 ```bash
 pip install pyspectrafuse
-```
-
-### Using conda
-
-```bash
-conda env create -f environment.yml
-conda activate pyspectrafuse
 ```
 
 ### Development Installation
@@ -44,10 +41,19 @@ cd pyspectrafuse
 pip install -e ".[test]"
 ```
 
+### Docker
+
+```bash
+docker pull ghcr.io/bigbio/pyspectrafuse:0.0.4
+docker run --rm -v /data:/data ghcr.io/bigbio/pyspectrafuse:0.0.4 \
+    pyspectrafuse convert-dat -p /data/project -o /data/output -c 2
+```
+
 ## Requirements
 
-- Python >= 3.8
+- Python >= 3.10
 - Click >= 8.0.0
+- DuckDB >= 1.0.0
 - numpy >= 1.20.0
 - pandas >= 1.3.0
 - pyarrow >= 5.0.0
@@ -58,7 +64,7 @@ pip install -e ".[test]"
 
 ### Command Line Interface
 
-#### Convert Parquet to Dat (recommended)
+#### Convert Parquet to Dat
 
 Convert QPX parquet files directly to MaRaCluster's binary `.dat` format:
 
@@ -73,7 +79,7 @@ MaRaCluster reads `.dat` files directly with the `-D` flag, skipping its own fil
 
 #### Build Cluster DB
 
-Generate cluster metadata and PSM membership parquets from MaRaCluster output:
+Generate cluster metadata and PSM membership parquets from MaRaCluster output. Uses DuckDB for efficient joins and chunked array loading to handle millions of PSMs within ~5 GB memory:
 
 ```bash
 pyspectrafuse build-cluster-db \
@@ -106,15 +112,15 @@ pyspectrafuse msp \
 Add new datasets to an existing cluster DB:
 
 ```bash
-# Step 1: Extract representative spectra from existing clusters
-pyspectrafuse incremental extract-reps \
+# Step 1: Extract representative spectra from existing clusters to .dat format
+pyspectrafuse incremental extract-reps-dat \
     --cluster_metadata cluster_db/cluster_metadata.parquet \
-    --output_mgf reps.mgf
+    --output_dir reps_output/
 
-# Step 2: Merge new data with existing clusters
+# Step 2: After MaRaCluster runs on [representatives + new data], merge results
 pyspectrafuse incremental merge-clusters \
     --cluster_tsv new_clusters.tsv \
-    --rep_mgf reps.mgf \
+    --scan_titles_dir scan_titles/ \
     --existing_metadata cluster_db/cluster_metadata.parquet \
     --existing_membership cluster_db/psm_cluster_membership.parquet \
     --new_parquet_dir /path/to/new_project/ \
@@ -142,7 +148,7 @@ from pyspectrafuse.maracluster_dat import parquet_to_dat
 from pyspectrafuse.common.qpx_metadata import get_metadata_dict
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
 
-# Convert parquet to dat (recommended path)
+# Convert parquet to dat
 written, skipped, dat_path = parquet_to_dat(
     'data/PXD014877/PXD014877.psm.parquet',
     output_dir='dat_files/',
@@ -161,31 +167,32 @@ parquet_files = list(ParquetPathHandler.iter_parquet_dir('/path/to/project/'))
 
 ```
 pyspectrafuse/
-├── maracluster_dat.py              # Parquet to .dat binary conversion
-├── cluster_parquet_combine/        # Cluster DB builder
+├── pyspectrafuse.py                # CLI entrypoint
+├── maracluster_dat.py              # Parquet to .dat binary conversion + m/z windowing
 ├── commands/                       # CLI command implementations
-│   ├── build_cluster_db.py         # build-cluster-db command
+│   ├── build_cluster_db.py         # build-cluster-db command (DuckDB + chunked arrays)
 │   ├── parquet2dat.py              # convert-dat command
 │   ├── cluster2parquet.py          # cluster-parquet command
-│   ├── quantmsio2mgf.py            # convert-mgf command
 │   ├── spectrum2msp.py             # msp command
-│   ├── incremental.py              # incremental sub-commands
+│   ├── incremental.py              # incremental sub-commands (extract-reps-dat, merge-clusters)
 │   └── convert_msnet_to_qpx.py     # convert-to-qpx command
 ├── common/                         # Shared utilities
-│   ├── qpx_metadata.py             # QPX metadata reader
-│   ├── parquet_utils.py            # Parquet file handling
-│   ├── msp_utils.py                # MSP format utilities
-│   └── sdrf_utils.py               # SDRF file parsing
+│   ├── duckdb_ops.py               # DuckDB operations (purity, stats, array scanning)
+│   ├── schemas.py                  # Parquet schema definitions (CLUSTER_META, PSM_MEMBERSHIP)
+│   ├── constant.py                 # ParquetSchemaAdapter (MSNet/QPX column normalization)
+│   ├── qpx_metadata.py             # QPX metadata reader (species/instrument from run+sample)
+│   ├── parquet_utils.py            # Parquet file handling (iter_parquet_dir, find_target_ext_files)
+│   └── msp_utils.py                # MSP format utilities
 ├── consensus_strategy/             # Consensus spectrum strategies
-│   ├── best_spetrum_strategy.py
-│   ├── binning_strategy.py
-│   ├── most_similar_strategy.py
-│   └── average_spectrum_strategy.py
+│   ├── best_spetrum_strategy.py    # Best PEP/q-value selection
+│   ├── binning_strategy.py         # Binning-based consensus
+│   ├── most_similar_strategy.py    # Most-similar spectrum selection
+│   └── average_spectrum_strategy.py # Averaged spectrum
 ├── incremental/                    # Incremental clustering modules
-│   ├── representative_mgf.py
-│   ├── resolve_clusters.py
-│   └── merge_results.py
-└── mgf_convert/                    # MGF conversion utilities
+│   ├── representative_dat.py       # Extract cluster reps to .dat format
+│   ├── resolve_clusters_dat.py     # Resolve cluster IDs via scan_titles
+│   └── merge_results.py            # Merge new PSMs into existing cluster DB
+└── cluster_parquet_combine/        # Cluster DB builder (legacy path)
 ```
 
 ## Testing
@@ -238,7 +245,3 @@ If you use pyspectrafuse in your research, please cite:
 ## Authors
 
 - **BigBio Team** - ypriverol@gmail.com
-
-## Acknowledgments
-
-This project is part of the BigBio initiative for open-source bioinformatics tools.

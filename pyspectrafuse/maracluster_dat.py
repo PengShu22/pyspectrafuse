@@ -6,6 +6,19 @@ directly from the pvalue computation step.
 
 Size: ~100 bytes/spectrum (1M PSMs = ~100 MB, 500M PSMs = ~50 GB)
 
+How it fits into the pipeline:
+  Normally MaRaCluster converts MGF/ms2 text files into .dat binaries as its
+  first step, then clusters the .dat data. This module bypasses that conversion
+  by producing .dat files directly from parquet — same binary format, but
+  without the intermediate MGF text stage. MaRaCluster's ``-D dat_dir`` flag
+  tells it to skip conversion and use existing .dat files in that directory.
+
+  MaRaCluster still requires a list of .mgf paths via ``-b`` (hardcoded in its
+  CLI parser), so the Nextflow process creates minimal dummy .mgf files (one
+  fake spectrum each) whose basenames match the .dat files. MaRaCluster matches
+  ``dummy.mgf`` → ``dummy.dat`` and reads the .dat data. The dummy MGF content
+  is never used for actual spectra.
+
 The .dat format is a flat array of Spectrum structs:
   struct Spectrum {  // 100 bytes total
     uint32 fileIdx;         // 0-based file index
@@ -309,3 +322,136 @@ def write_dat_file_list(dat_paths: List[str], output_path: str) -> str:
         for p in dat_paths:
             f.write(p + '\n')
     return output_path
+
+
+def split_dat_by_mz_window(
+    dat_path: str,
+    scaninfo_path: str,
+    titles_path: str,
+    output_dir: str,
+    window_size: float = 300.0,
+    window_overlap: float = 1.0,
+    min_mz: float = 200.0,
+    max_mz: float = 2000.0,
+) -> List[Dict]:
+    """Split a .dat file into precursor m/z windows for parallel MaRaCluster.
+
+    MaRaCluster uses 20 ppm precursor tolerance internally — spectra far apart
+    in m/z can NEVER cluster together. This function formalizes that by splitting
+    spectra into overlapping m/z windows, enabling Nextflow to run MaRaCluster
+    on each window in parallel.
+
+    Args:
+        dat_path: Path to the .dat file (100 bytes/spectrum).
+        scaninfo_path: Path to the .scan_info.dat file (16 bytes/spectrum).
+        titles_path: Path to the .scan_titles.txt file.
+        output_dir: Directory to write per-window .dat files.
+        window_size: Width of each m/z window in Da (default 300).
+        window_overlap: Overlap between adjacent windows in Da (default 1.0).
+        min_mz: Minimum precursor m/z (default 200).
+        max_mz: Maximum precursor m/z (default 2000).
+
+    Returns:
+        List of dicts, each with keys:
+            - 'window_idx': int
+            - 'mz_min': float
+            - 'mz_max': float
+            - 'dat_path': str
+            - 'scaninfo_path': str
+            - 'titles_path': str
+            - 'n_spectra': int
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    # Read all spectra: extract precursor m/z from each 100-byte struct
+    dat_size = Path(dat_path).stat().st_size
+    n_spectra = dat_size // SPECTRUM_STRUCT.size
+    if n_spectra == 0:
+        return []
+
+    # Read all precursor m/z values from .dat (offset 12 in the struct: 3×uint32, then float32)
+    prec_mzs = np.zeros(n_spectra, dtype=np.float32)
+    with open(dat_path, 'rb') as f:
+        for i in range(n_spectra):
+            data = f.read(SPECTRUM_STRUCT.size)
+            unpacked = SPECTRUM_STRUCT.unpack(data)
+            prec_mzs[i] = unpacked[3]  # precMz is 4th field
+
+    # Read scan_titles lines
+    with open(titles_path) as f:
+        title_lines = f.readlines()
+
+    # Read scaninfo records
+    scaninfo_size = Path(scaninfo_path).stat().st_size
+    with open(scaninfo_path, 'rb') as f:
+        scaninfo_data = f.read()
+
+    # Compute window boundaries
+    if window_overlap >= window_size:
+        raise ValueError(
+            f"window_overlap ({window_overlap}) must be less than "
+            f"window_size ({window_size}) to avoid infinite loop")
+    windows = []
+    window_start = min_mz
+    idx = 0
+    while window_start < max_mz:
+        window_end = min(window_start + window_size, max_mz)
+        windows.append((idx, window_start, window_end))
+        if window_end >= max_mz:
+            break
+        window_start = window_end - window_overlap
+        idx += 1
+
+    # Read all .dat records at once
+    with open(dat_path, 'rb') as f:
+        dat_data = f.read()
+
+    stem = Path(dat_path).stem
+    results = []
+
+    for widx, wmin, wmax in windows:
+        # Find spectra in this window
+        mask = (prec_mzs >= wmin) & (prec_mzs < wmax)
+        indices = np.where(mask)[0]
+
+        if len(indices) == 0:
+            continue
+
+        # Write window-specific files
+        w_dat_path = str(Path(output_dir) / f"{stem}_w{widx}.dat")
+        w_scaninfo_path = str(Path(output_dir) / f"{stem}_w{widx}.scan_info.dat")
+        w_titles_path = str(Path(output_dir) / f"{stem}_w{widx}.scan_titles.txt")
+
+        with open(w_dat_path, 'wb') as f_dat, \
+             open(w_scaninfo_path, 'wb') as f_si, \
+             open(w_titles_path, 'w') as f_titles:
+
+            for orig_idx in indices:
+                # Copy original spectrum struct unchanged (preserve original scannr)
+                offset = orig_idx * SPECTRUM_STRUCT.size
+                f_dat.write(dat_data[offset:offset + SPECTRUM_STRUCT.size])
+
+                # Copy scaninfo unchanged
+                si_offset = orig_idx * SCANINFO_STRUCT.size
+                if si_offset + SCANINFO_STRUCT.size <= len(scaninfo_data):
+                    f_si.write(scaninfo_data[si_offset:si_offset + SCANINFO_STRUCT.size])
+
+                # Copy scan title unchanged
+                if orig_idx < len(title_lines):
+                    f_titles.write(title_lines[orig_idx])
+
+        results.append({
+            'window_idx': widx,
+            'mz_min': wmin,
+            'mz_max': wmax,
+            'dat_path': w_dat_path,
+            'scaninfo_path': w_scaninfo_path,
+            'titles_path': w_titles_path,
+            'n_spectra': len(indices),
+        })
+
+        logger.info(f"Window {widx} [{wmin:.0f}-{wmax:.0f} Da]: "
+                     f"{len(indices)} spectra → {w_dat_path}")
+
+    logger.info(f"Split {n_spectra} spectra into {len(results)} m/z windows")
+    return results

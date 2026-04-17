@@ -1,61 +1,36 @@
 """CLI command for building cluster DB from dat-bypass pipeline output.
 
 Maps cluster assignments back to original spectra via scan_titles.txt files
-generated during parquet_to_dat conversion. Handles the naming mismatch between
-dat bypass dummy MGFs and the standard inject_cluster_info() convention.
+generated during parquet_to_dat conversion. Uses DuckDB for efficient joins
+and aggregations.
 """
 import gc
 import re
 import click
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Tuple
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pyspectrafuse.common.constant import ParquetSchemaAdapter
+from pyspectrafuse.common.schemas import CLUSTER_META_SCHEMA, PSM_MEMBERSHIP_SCHEMA
+from pyspectrafuse.common.duckdb_ops import (
+    compute_stats_and_purity,
+    scan_parquet_scalars,
+    scan_parquet_arrays,
+    write_parquet_from_df,
+    _detect_scan_expr,
+)
 from pyspectrafuse.commands.spectrum2msp import find_target_ext_files
 
 logger = logging.getLogger(__name__)
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
-
-# Output schemas
-CLUSTER_META_SCHEMA = pa.schema([
-    ('cluster_id', pa.string()),
-    ('species', pa.string()),
-    ('instrument', pa.string()),
-    ('charge', pa.int8()),
-    ('peptidoform', pa.string()),
-    ('peptide_sequence', pa.string()),
-    ('consensus_mz_array', pa.list_(pa.float32())),
-    ('consensus_intensity_array', pa.list_(pa.float32())),
-    ('consensus_method', pa.string()),
-    ('precursor_mz', pa.float64()),
-    ('member_count', pa.int32()),
-    ('project_count', pa.int16()),
-    ('best_pep', pa.float64()),
-    ('best_qvalue', pa.float64()),
-    ('purity', pa.float32()),
-])
-
-PSM_MEMBERSHIP_SCHEMA = pa.schema([
-    ('cluster_id', pa.string()),
-    ('usi', pa.string()),
-    ('project_accession', pa.string()),
-    ('reference_file_name', pa.string()),
-    ('scan', pa.int32()),
-    ('peptidoform', pa.string()),
-    ('charge', pa.int8()),
-    ('precursor_mz', pa.float64()),
-    ('posterior_error_probability', pa.float64()),
-    ('global_qvalue', pa.float64()),
-    ('species', pa.string()),
-    ('instrument', pa.string()),
-])
 
 
 def parse_cluster_tsv(tsv_path: str) -> pd.DataFrame:
@@ -65,8 +40,11 @@ def parse_cluster_tsv(tsv_path: str) -> pd.DataFrame:
                      skip_blank_lines=False)
     df = df.dropna()
     df['scannr'] = df['scannr'].astype(int)
-    df['cluster_id'] = df['cluster_id'].astype(int).astype(str)
-    df['mgf_basename'] = df['mgf_path'].apply(lambda p: Path(p).name)
+    df['cluster_id'] = df['cluster_id'].astype(str)
+    # Strip window suffix (e.g., _w0, _w1) from MGF basename so it matches
+    # the original scan_titles filename (without window index)
+    df['mgf_basename'] = df['mgf_path'].apply(
+        lambda p: re.sub(r'_w\d+\.mgf$', '.mgf', Path(p).name))
     return df[['mgf_basename', 'scannr', 'cluster_id']]
 
 
@@ -101,72 +79,6 @@ def parse_scan_titles(titles_path: str, dataset_name: str) -> pd.DataFrame:
                                         'peptidoform', 'charge', 'dataset'])
 
 
-def _scan_parquet_scalars(
-    needed: Set[Tuple[str, int]],
-    parquet_dirs: List[str],
-    charge_int: int,
-) -> pd.DataFrame:
-    """Read scalar columns (PEP, q-value, precursor_mz) from parquet files."""
-    read_cols = ['charge', 'observed_mz', 'calculated_mz', 'run_file_name',
-                 'scan', 'posterior_error_probability', 'additional_scores']
-    parts = []
-
-    for pdir in parquet_dirs:
-        parquet_files = find_target_ext_files(pdir, '.parquet')
-        for pf_path in parquet_files:
-            pf = pq.ParquetFile(pf_path)
-            available = set(pf.schema_arrow.names)
-            cols = [c for c in read_cols if c in available]
-
-            for batch in pf.iter_batches(batch_size=200_000, columns=cols):
-                df = batch.to_pandas()
-                df = ParquetSchemaAdapter.adapt(df)
-
-                if 'charge' in df.columns:
-                    df = df[df['charge'] == charge_int]
-                    if df.empty:
-                        continue
-
-                scan_col = df['scan']
-                if scan_col.dtype == object:
-                    df['scan_int'] = scan_col.apply(
-                        lambda s: int(s[0]) if isinstance(s, (list, np.ndarray)) and len(s) > 0
-                        else (int(s) if s is not None else 0))
-                else:
-                    df['scan_int'] = scan_col.fillna(0).astype(int)
-
-                keys = list(zip(df['reference_file_name'].values, df['scan_int'].values))
-                mask = pd.array([k in needed for k in keys], dtype=bool)
-                df = df[mask]
-                if df.empty:
-                    continue
-
-                if 'pepmass' in df.columns:
-                    prec_mz = pd.to_numeric(df['pepmass'], errors='coerce')
-                    if 'calculated_mz' in df.columns:
-                        prec_mz = prec_mz.fillna(pd.to_numeric(df['calculated_mz'], errors='coerce'))
-                elif 'calculated_mz' in df.columns:
-                    prec_mz = pd.to_numeric(df['calculated_mz'], errors='coerce')
-                else:
-                    prec_mz = pd.Series(0.0, index=df.index)
-
-                parts.append(pd.DataFrame({
-                    'run_file_name': df['reference_file_name'].values,
-                    'orig_scan': df['scan_int'].values,
-                    'precursor_mz': prec_mz.fillna(0.0).values,
-                    'posterior_error_probability': pd.to_numeric(
-                        df.get('posterior_error_probability', pd.Series(dtype=float)),
-                        errors='coerce').reindex(df.index).values,
-                    'global_qvalue': pd.to_numeric(
-                        df.get('global_qvalue', pd.Series(dtype=float)),
-                        errors='coerce').reindex(df.index).values,
-                }))
-
-    if not parts:
-        return pd.DataFrame()
-    return pd.concat(parts, ignore_index=True)
-
-
 def build_cluster_db(
     cluster_tsv: str,
     scan_titles_files: List[str],
@@ -181,9 +93,9 @@ def build_cluster_db(
 ) -> Tuple[Optional[str], Optional[str]]:
     """Build cluster DB from dat-bypass output using scan_titles mapping.
 
-    Two-pass memory-efficient approach:
-      Pass 1: Read scalars (PEP, q-value, precursor_mz) for all spectra
-      Pass 2: Read spectrum arrays in chunks for best PSM per cluster
+    Uses DuckDB for efficient parquet scanning and aggregation:
+      Pass 1: DuckDB SEMI JOIN to read scalars (PEP, q-value, precursor_mz)
+      Pass 2: DuckDB SEMI JOIN to read spectrum arrays for best PSM per cluster
     """
     charge_int = int(charge_str.replace('charge', ''))
     out_dir = Path(output_dir)
@@ -198,7 +110,6 @@ def build_cluster_db(
     titles_dfs = []
     for titles_file, ds_name in zip(scan_titles_files, dataset_names):
         titles_df = parse_scan_titles(titles_file, ds_name)
-        # mgf_basename matches the dat filename with .mgf extension
         stem = Path(titles_file).name.replace('.scan_titles.txt', '')
         titles_df['mgf_basename'] = f'{stem}.mgf'
         titles_dfs.append(titles_df)
@@ -210,76 +121,150 @@ def build_cluster_db(
         logger.warning(f"{len(cluster_df) - len(membership)} spectra lost in join")
     logger.info(f"Membership: {len(membership)} PSMs in {membership['cluster_id'].nunique()} clusters")
 
-    # ── Pass 1: Scalars ──
-    needed = set(zip(membership['run_file_name'].values,
-                     membership['orig_scan'].astype(int).values))
-    logger.info(f"Pass 1: Reading scalars for {len(needed)} spectra...")
+    # ── Write membership to temp parquet for DuckDB-only pipeline ──
+    # Instead of loading everything into pandas, write membership as parquet
+    # and let DuckDB handle the enrichment + PSM writing entirely in SQL.
+    import tempfile
+    tmp_dir = tempfile.mkdtemp(prefix='cluster_db_')
+    membership_tmp = str(Path(tmp_dir) / 'membership.parquet')
+    membership.to_parquet(membership_tmp, index=False)
+    del membership; gc.collect()
 
-    scalars_df = _scan_parquet_scalars(needed, parquet_dirs, charge_int)
-    if scalars_df.empty:
-        logger.warning("No parquet data matched!")
-        return None, None
-    logger.info(f"Pass 1: Found {len(scalars_df)} spectra")
+    # Collect all parquet file paths
+    all_parquet_files = []
+    for pdir in parquet_dirs:
+        all_parquet_files.extend(find_target_ext_files(pdir, '.parquet'))
 
-    enriched = membership.merge(scalars_df, on=['run_file_name', 'orig_scan'],
-                                how='left', suffixes=('', '_pq'))
-    del scalars_df; gc.collect()
+    # ── Pass 1: Build PSM membership entirely in DuckDB ──
+    # DuckDB reads source parquet with predicate pushdown (charge filter)
+    # and SEMI JOINs with the membership temp parquet — no pandas intermediary.
+    logger.info(f"Pass 1: Building PSM membership via DuckDB (charge={charge_int})...")
 
-    # ── Write PSM Membership ──
-    psm_df = pd.DataFrame({
-        'cluster_id': enriched['cluster_id'].values,
-        'usi': ('mzspec:' + enriched['dataset'].astype(str) + ':' +
-                enriched['run_file_name'].astype(str) + ':scan:' +
-                enriched['orig_scan'].astype(str) + ':' +
-                enriched['peptidoform'].astype(str) + '/' +
-                enriched['charge'].astype(str)),
-        'project_accession': enriched['dataset'].values,
-        'reference_file_name': enriched['run_file_name'].values,
-        'scan': enriched['orig_scan'].values.astype(np.int32),
-        'peptidoform': enriched['peptidoform'].values,
-        'charge': np.full(len(enriched), charge_int, dtype=np.int8),
-        'precursor_mz': pd.to_numeric(enriched['precursor_mz'], errors='coerce').fillna(0).values,
-        'posterior_error_probability': pd.to_numeric(
-            enriched['posterior_error_probability'], errors='coerce').values,
-        'global_qvalue': pd.to_numeric(
-            enriched['global_qvalue'], errors='coerce').values,
-        'species': species,
-        'instrument': instrument,
-    })
+    # Use a file-backed DuckDB database so large JOINs can spill to disk
+    # instead of OOM-killing the process.
+    duckdb_path = str(Path(tmp_dir) / 'build.duckdb')
+    conn = duckdb.connect(duckdb_path)
+    try:
+        conn.execute("SET memory_limit='4GB'")
+        conn.execute(f"SET temp_directory='{tmp_dir}'")
+        conn.execute("SET threads=4")
+    except Exception:
+        conn.close()
+        raise
 
+    # Build the source parquet UNION with column normalization
+    source_parts = []
+    for ppath in all_parquet_files:
+        cols_df = conn.execute(f"SELECT name FROM parquet_schema('{ppath}')").fetchdf()
+        available = set(cols_df['name'])
+
+        run_col = 'run_file_name' if 'run_file_name' in available else 'reference_file_name'
+        charge_col = 'charge' if 'charge' in available else 'precursor_charge'
+
+        mz_parts = []
+        if 'observed_mz' in available: mz_parts.append('observed_mz')
+        if 'calculated_mz' in available: mz_parts.append('calculated_mz')
+        if 'exp_mass_to_charge' in available: mz_parts.append('exp_mass_to_charge')
+        mz_expr = f"COALESCE({', '.join(mz_parts)}, 0.0)" if mz_parts else '0.0'
+
+        pep_col = 'posterior_error_probability' if 'posterior_error_probability' in available else 'NULL'
+
+        # Handle scan column type
+        scan_expr = _detect_scan_expr(conn, ppath)
+
+        if 'global_qvalue' in available:
+            qvalue_expr = 'global_qvalue'
+        elif 'additional_scores' in available:
+            qvalue_expr = """(
+                SELECT s.score_value
+                FROM UNNEST(additional_scores) AS t(s)
+                WHERE s.score_name = 'global_qvalue'
+                LIMIT 1
+            )"""
+        else:
+            qvalue_expr = 'NULL'
+
+        source_parts.append(f"""
+            SELECT
+                {run_col} AS run_file_name,
+                {scan_expr} AS orig_scan,
+                {mz_expr} AS precursor_mz,
+                {pep_col} AS posterior_error_probability,
+                {qvalue_expr} AS global_qvalue
+            FROM read_parquet('{ppath}')
+            WHERE {charge_col} = {charge_int}
+        """)
+
+    source_union = " UNION ALL ".join(source_parts)
+
+    # Write PSM membership directly to parquet via DuckDB
     psm_path = str(out_dir / 'psm_cluster_membership.parquet')
-    psm_df = psm_df.sort_values('cluster_id')
-    psm_table = pa.Table.from_pandas(psm_df, schema=PSM_MEMBERSHIP_SCHEMA, preserve_index=False)
-    pq.write_table(psm_table, psm_path, compression='zstd')
-    logger.info(f"PSM membership: {len(psm_df)} rows, {Path(psm_path).stat().st_size / 1e6:.1f} MB")
-    del psm_table; gc.collect()
+    try:
+        conn.execute(f"""
+            COPY (
+                SELECT
+                    m.cluster_id,
+                    'mzspec:' || m.dataset || ':' || m.run_file_name || ':scan:'
+                        || CAST(m.orig_scan AS VARCHAR) || ':' || m.peptidoform
+                        || '/' || CAST({charge_int} AS VARCHAR) AS usi,
+                    m.dataset AS project_accession,
+                    m.run_file_name AS reference_file_name,
+                    CAST(m.orig_scan AS INTEGER) AS scan,
+                    m.peptidoform,
+                    CAST({charge_int} AS TINYINT) AS charge,
+                    COALESCE(s.precursor_mz, 0.0) AS precursor_mz,
+                    s.posterior_error_probability,
+                    s.global_qvalue,
+                    '{species}' AS species,
+                    '{instrument}' AS instrument
+                FROM read_parquet('{membership_tmp}') m
+                LEFT JOIN ({source_union}) s
+                    ON m.run_file_name = s.run_file_name
+                    AND m.orig_scan = s.orig_scan
+                ORDER BY m.cluster_id
+            ) TO '{psm_path}' (FORMAT PARQUET, COMPRESSION ZSTD)
+        """)
 
-    # ── Cluster Stats ──
-    cluster_stats = psm_df.groupby('cluster_id').agg(
-        member_count=('usi', 'count'),
-        project_count=('project_accession', 'nunique'),
-        best_pep=('posterior_error_probability', 'min'),
-        best_qvalue=('global_qvalue', 'min'),
-    ).reset_index()
+        n_psms = conn.execute(f"SELECT COUNT(*) FROM read_parquet('{psm_path}')").fetchone()[0]
+        logger.info(f"PSM membership: {n_psms} rows written to {psm_path}")
 
-    pair_counts = psm_df.groupby(['cluster_id', 'peptidoform']).size().reset_index(name='_cnt')
-    mode_per_cluster = pair_counts.groupby('cluster_id')['_cnt'].max()
-    total_per_cluster = psm_df.groupby('cluster_id').size()
-    purity_series = mode_per_cluster / total_per_cluster
-    del psm_df, pair_counts, mode_per_cluster, total_per_cluster; gc.collect()
+        # ── Cluster Stats + Purity via DuckDB ──
+        stats_purity = compute_stats_and_purity(psm_path)
 
-    # ── Best PSM per cluster ──
-    enriched['_pep'] = pd.to_numeric(enriched['posterior_error_probability'], errors='coerce')
-    best_idx = enriched.groupby('cluster_id')['_pep'].idxmin()
-    best_rows = enriched.loc[best_idx, ['cluster_id', 'run_file_name', 'orig_scan',
-                                         'peptidoform', 'precursor_mz']].copy()
-    n_clusters = len(best_rows)
-    logger.info(f"Best PSMs: {n_clusters} clusters")
-    del enriched; gc.collect()
+        # ── Best PSM per cluster + spectrum arrays (chunked to avoid OOM) ──
+        logger.info(f"Pass 2: Finding best PSM per cluster...")
 
-    # ── Pass 2: Chunked array reading + incremental metadata write ──
+        # Get best PSM keys via DuckDB on the membership parquet we just wrote
+        best_keys = conn.execute(f"""
+            SELECT cluster_id, reference_file_name AS run_file_name,
+                   scan AS orig_scan, peptidoform, precursor_mz
+            FROM (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY cluster_id
+                           ORDER BY posterior_error_probability ASC NULLS LAST
+                       ) AS _rn
+                FROM read_parquet('{psm_path}')
+            )
+            WHERE _rn = 1
+        """).fetchdf()
+        n_clusters = len(best_keys)
+        best_keys['orig_scan'] = best_keys['orig_scan'].astype(int)
+        logger.info(f"Best PSMs: {n_clusters} clusters")
+    finally:
+        conn.close()
+
+    # Merge with stats/purity early (small — just scalars)
+    best_keys = best_keys.merge(stats_purity, on='cluster_id', how='left')
+    best_keys['purity'] = best_keys['purity'].fillna(1.0).astype(np.float32)
+    best_keys['member_count'] = best_keys['member_count'].fillna(1).astype(np.int32)
+    best_keys['project_count'] = best_keys['project_count'].fillna(1).astype(np.int16)
+    del stats_purity; gc.collect()
+
+    # ── Write cluster metadata in chunks (avoids loading all arrays at once) ──
     meta_path = str(out_dir / 'cluster_metadata.parquet')
     writer = None
+    total_written = 0
 
     def to_f32_list(arr):
         if arr is None:
@@ -290,95 +275,60 @@ def build_cluster_db(
             return [float(x) for x in arr]
         return []
 
-    n_chunks = max((n_clusters + chunk_size - 1) // chunk_size, 1)
-    best_chunks = np.array_split(best_rows, n_chunks)
+    for chunk_start in range(0, n_clusters, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, n_clusters)
+        chunk_keys = best_keys.iloc[chunk_start:chunk_end]
+        logger.info(f"Pass 2 chunk {chunk_start//chunk_size + 1}: "
+                     f"clusters {chunk_start}-{chunk_end} of {n_clusters}")
 
-    read_cols = ['mz_array', 'intensity_array', 'charge', 'run_file_name', 'scan']
+        # Read arrays for this chunk only
+        keys_for_join = chunk_keys[['run_file_name', 'orig_scan']].copy()
+        arrays_df = scan_parquet_arrays(
+            all_parquet_files, keys_for_join, charge_int,
+            temp_directory=tmp_dir)
 
-    for chunk_i, chunk_df in enumerate(best_chunks):
-        chunk_keys = set(zip(chunk_df['run_file_name'].values,
-                             chunk_df['orig_scan'].astype(int).values))
-        logger.info(f"Pass 2 chunk {chunk_i+1}/{n_chunks}: {len(chunk_keys)} spectra")
+        chunk_with_arrays = chunk_keys.merge(
+            arrays_df, on=['run_file_name', 'orig_scan'], how='left')
+        del arrays_df, keys_for_join; gc.collect()
 
-        arrays_dict = {}
-        for pdir in parquet_dirs:
-            parquet_files = find_target_ext_files(pdir, '.parquet')
-            for pf_path in parquet_files:
-                pf = pq.ParquetFile(pf_path)
-                available = set(pf.schema_arrow.names)
-                cols = [c for c in read_cols if c in available]
-
-                for batch in pf.iter_batches(batch_size=200_000, columns=cols):
-                    df = batch.to_pandas()
-                    df = ParquetSchemaAdapter.adapt(df)
-                    if 'charge' in df.columns:
-                        df = df[df['charge'] == charge_int]
-                        if df.empty:
-                            continue
-
-                    scan_col = df['scan']
-                    if scan_col.dtype == object:
-                        df['scan_int'] = scan_col.apply(
-                            lambda s: int(s[0]) if isinstance(s, (list, np.ndarray)) and len(s) > 0
-                            else (int(s) if s is not None else 0))
-                    else:
-                        df['scan_int'] = scan_col.fillna(0).astype(int)
-
-                    keys = list(zip(df['reference_file_name'].values, df['scan_int'].values))
-                    mask = [k in chunk_keys for k in keys]
-                    df = df[mask]
-                    if df.empty:
-                        continue
-
-                    for _, row in df.iterrows():
-                        key = (row['reference_file_name'], row['scan_int'])
-                        if key not in arrays_dict:
-                            arrays_dict[key] = (row['mz_array'], row['intensity_array'])
-
-        mz_arrays = []
-        int_arrays = []
-        for _, row in chunk_df.iterrows():
-            key = (row['run_file_name'], int(row['orig_scan']))
-            if key in arrays_dict:
-                mz_arr, int_arr = arrays_dict[key]
-                mz_arrays.append(to_f32_list(mz_arr))
-                int_arrays.append(to_f32_list(int_arr))
-            else:
-                mz_arrays.append([])
-                int_arrays.append([])
-        del arrays_dict; gc.collect()
+        has_mz = 'mz_array' in chunk_with_arrays.columns
+        has_int = 'intensity_array' in chunk_with_arrays.columns
 
         chunk_meta = pd.DataFrame({
-            'cluster_id': chunk_df['cluster_id'].values,
+            'cluster_id': chunk_with_arrays['cluster_id'].values,
             'species': species,
             'instrument': instrument,
             'charge': np.int8(charge_int),
-            'peptidoform': chunk_df['peptidoform'].values,
-            'peptide_sequence': chunk_df['peptidoform'].str.split('/').str[0].str.replace(
+            'peptidoform': chunk_with_arrays['peptidoform'].values,
+            'peptide_sequence': chunk_with_arrays['peptidoform'].str.split('/').str[0].str.replace(
                 r'\[.*?\]', '', regex=True).values,
-            'consensus_mz_array': mz_arrays,
-            'consensus_intensity_array': int_arrays,
+            'consensus_mz_array': chunk_with_arrays['mz_array'].apply(to_f32_list).values if has_mz else [[] for _ in range(len(chunk_with_arrays))],
+            'consensus_intensity_array': chunk_with_arrays['intensity_array'].apply(to_f32_list).values if has_int else [[] for _ in range(len(chunk_with_arrays))],
             'consensus_method': method_type,
-            'precursor_mz': pd.to_numeric(chunk_df['precursor_mz'], errors='coerce').fillna(0).values,
+            'precursor_mz': pd.to_numeric(chunk_with_arrays['precursor_mz'], errors='coerce').fillna(0).values,
+            'member_count': chunk_with_arrays['member_count'].values,
+            'project_count': chunk_with_arrays['project_count'].values,
+            'best_pep': chunk_with_arrays['best_pep'].values if 'best_pep' in chunk_with_arrays.columns else np.nan,
+            'best_qvalue': chunk_with_arrays['best_qvalue'].values if 'best_qvalue' in chunk_with_arrays.columns else np.nan,
+            'purity': chunk_with_arrays['purity'].values,
         })
-        del mz_arrays, int_arrays
-
-        chunk_meta = chunk_meta.merge(cluster_stats, on='cluster_id', how='left')
-        chunk_meta['purity'] = chunk_meta['cluster_id'].map(purity_series).fillna(1.0).astype(np.float32)
-        chunk_meta['member_count'] = chunk_meta['member_count'].fillna(1).astype(np.int32)
-        chunk_meta['project_count'] = chunk_meta['project_count'].fillna(1).astype(np.int16)
+        del chunk_with_arrays; gc.collect()
 
         chunk_table = pa.Table.from_pandas(chunk_meta, schema=CLUSTER_META_SCHEMA, preserve_index=False)
         if writer is None:
-            writer = pq.ParquetWriter(meta_path, CLUSTER_META_SCHEMA, compression='zstd')
+            writer = pq.ParquetWriter(meta_path, schema=CLUSTER_META_SCHEMA, compression='zstd')
         writer.write_table(chunk_table)
+        total_written += len(chunk_meta)
         del chunk_meta, chunk_table; gc.collect()
 
     if writer is not None:
         writer.close()
 
-    del best_rows, cluster_stats, purity_series; gc.collect()
-    logger.info(f"Cluster metadata: {n_clusters} clusters, "
+    # Clean up temp files
+    import shutil
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    logger.info(f"Cluster metadata: {total_written} clusters, "
                 f"{Path(meta_path).stat().st_size / 1e6:.1f} MB")
 
     return meta_path, psm_path
@@ -412,8 +362,8 @@ def build_cluster_db_cmd(cluster_tsv, scan_titles, parquet_dir, dataset_name,
     from dat-bypass pipeline output.
 
     Uses scan_titles.txt files to map MaRaCluster dat indices back to
-    original spectra in the parquet files. Memory-efficient chunked approach
-    for partitions with millions of clusters.
+    original spectra in the parquet files. DuckDB-powered for efficient
+    joins and aggregations at any scale.
     """
     if len(scan_titles) != len(dataset_name):
         raise click.ClickException(

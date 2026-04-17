@@ -10,6 +10,8 @@ import pyarrow.parquet as pq
 
 from pyspectrafuse.common.constant import UseCol
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
+from pyspectrafuse.common.schemas import CLUSTER_META_SCHEMA, PSM_MEMBERSHIP_SCHEMA
+from pyspectrafuse.common.duckdb_ops import compute_stats_and_purity
 from pyspectrafuse.cluster_parquet_combine.cluster_res_handler import ClusterResHandler
 from pyspectrafuse.cluster_parquet_combine.combine_cluster_and_parquet import CombineCluster2Parquet
 from pyspectrafuse.commands.spectrum2msp import create_consensus_strategy, find_target_ext_files
@@ -121,27 +123,14 @@ def _build_psm_membership(df: pd.DataFrame, species: str, instrument: str,
 def _build_cluster_metadata(consensus_df: pd.DataFrame, single_df: pd.DataFrame,
                              psm_df: pd.DataFrame, species: str, instrument: str,
                              charge: str, method_type: str) -> pd.DataFrame:
-    """Build cluster metadata dataframe with consensus spectra (vectorized)."""
-    import re
+    """Build cluster metadata dataframe with consensus spectra.
 
-    # Cluster stats: vectorized aggregation
-    cluster_stats = psm_df.groupby('cluster_id').agg(
-        member_count=('usi', 'count'),
-        project_count=('project_accession', 'nunique'),
-        best_pep=('posterior_error_probability', 'min'),
-        best_qvalue=('global_qvalue', 'min'),
-    ).reset_index()
+    Uses DuckDB for stats/purity aggregation, pandas for spectrum array assembly.
+    """
+    # Cluster stats + purity via DuckDB
+    stats_purity = compute_stats_and_purity(psm_df)
 
-    # Purity: double-groupby is 84x faster than lambda x: x.value_counts().iloc[0]
-    pair_counts = psm_df.groupby(['cluster_id', 'peptidoform']).size().reset_index(name='_cnt')
-    mode_count_per_cluster = pair_counts.groupby('cluster_id')['_cnt'].max()
-    total_per_cluster = psm_df.groupby('cluster_id').size()
-    purity_df = pd.DataFrame({
-        'cluster_id': total_per_cluster.index,
-        'purity': (mode_count_per_cluster / total_per_cluster).values
-    })
-
-    # Build metadata from consensus + single DataFrames (vectorized)
+    # Build metadata from consensus + single DataFrames (pandas for list columns)
     charge_int = int(charge.replace('charge', '')) if 'charge' in str(charge) else int(charge)
     parts = []
 
@@ -155,11 +144,9 @@ def _build_cluster_metadata(consensus_df: pd.DataFrame, single_df: pd.DataFrame,
         part['instrument'] = instrument
         part['charge'] = charge_int
         part['peptidoform'] = source_df['peptidoform'].astype(str).values
-        # Extract base peptide sequence: strip /charge suffix, then strip [mod] annotations
         part['peptide_sequence'] = part['peptidoform'].str.split('/').str[0].str.replace(
             r'\[.*?\]', '', regex=True)
 
-        # Convert spectrum arrays to lists for parquet storage
         def _to_f32_list(arr):
             if isinstance(arr, np.ndarray):
                 return arr.astype(np.float32).tolist()
@@ -185,10 +172,9 @@ def _build_cluster_metadata(consensus_df: pd.DataFrame, single_df: pd.DataFrame,
 
     meta_df = pd.concat(parts, ignore_index=True)
 
-    # Merge with cluster statistics and purity
-    if not meta_df.empty and not cluster_stats.empty:
-        meta_df = meta_df.merge(cluster_stats, on='cluster_id', how='left')
-        meta_df = meta_df.merge(purity_df, on='cluster_id', how='left')
+    # Merge with DuckDB-computed stats and purity
+    if not meta_df.empty and not stats_purity.empty:
+        meta_df = meta_df.merge(stats_purity, on='cluster_id', how='left')
         meta_df['member_count'] = meta_df['member_count'].fillna(1).astype(int)
         meta_df['project_count'] = meta_df['project_count'].fillna(1).astype(int)
         meta_df['purity'] = meta_df['purity'].fillna(1.0)
@@ -197,57 +183,21 @@ def _build_cluster_metadata(consensus_df: pd.DataFrame, single_df: pd.DataFrame,
 
 
 def _write_cluster_metadata_parquet(df: pd.DataFrame, path: str):
-    """Write cluster metadata to parquet with appropriate schema."""
+    """Write cluster metadata to parquet with canonical schema."""
     if df.empty:
         logger.warning("Empty cluster metadata, skipping write")
         return
-
-    schema = pa.schema([
-        ('cluster_id', pa.string()),
-        ('species', pa.string()),
-        ('instrument', pa.string()),
-        ('charge', pa.int8()),
-        ('peptidoform', pa.string()),
-        ('peptide_sequence', pa.string()),
-        ('consensus_mz_array', pa.list_(pa.float32())),
-        ('consensus_intensity_array', pa.list_(pa.float32())),
-        ('consensus_method', pa.string()),
-        ('precursor_mz', pa.float64()),
-        ('member_count', pa.int32()),
-        ('project_count', pa.int16()),
-        ('best_pep', pa.float64()),
-        ('best_qvalue', pa.float64()),
-        ('purity', pa.float32()),
-    ])
-
-    table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+    table = pa.Table.from_pandas(df, schema=CLUSTER_META_SCHEMA, preserve_index=False)
     pq.write_table(table, path, compression='zstd')
 
 
 def _write_psm_membership_parquet(df: pd.DataFrame, path: str):
-    """Write PSM cluster membership to parquet with appropriate schema."""
+    """Write PSM cluster membership to parquet with canonical schema."""
     if df.empty:
         logger.warning("Empty PSM membership, skipping write")
         return
-
-    schema = pa.schema([
-        ('cluster_id', pa.string()),
-        ('usi', pa.string()),
-        ('project_accession', pa.string()),
-        ('reference_file_name', pa.string()),
-        ('scan', pa.int32()),
-        ('peptidoform', pa.string()),
-        ('charge', pa.int8()),
-        ('precursor_mz', pa.float64()),
-        ('posterior_error_probability', pa.float64()),
-        ('global_qvalue', pa.float64()),
-        ('species', pa.string()),
-        ('instrument', pa.string()),
-    ])
-
-    # Sort by cluster_id for better query performance
     df = df.sort_values('cluster_id')
-    table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+    table = pa.Table.from_pandas(df, schema=PSM_MEMBERSHIP_SCHEMA, preserve_index=False)
     pq.write_table(table, path, compression='zstd')
 
 

@@ -1,5 +1,4 @@
 import click
-from pyspectrafuse.commands.quantmsio2mgf import quantmsio2mgf
 from pyspectrafuse.commands.spectrum2msp import spectrum2msp
 from pyspectrafuse.commands.cluster2parquet import cluster2parquet
 from pyspectrafuse.commands.incremental import incremental
@@ -17,13 +16,12 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 def cli():
     """
     pyspectrafuse - Command-line utilities for spectrum clustering and conversion.
-    
-    This tool provides commands for converting parquet files to MGF format and
+
+    This tool provides commands for converting parquet files to dat format and
     generating MSP format files using various consensus spectrum strategies.
     """
 
 
-cli.add_command(quantmsio2mgf)
 cli.add_command(spectrum2msp)
 cli.add_command(cluster2parquet)
 cli.add_command(incremental)

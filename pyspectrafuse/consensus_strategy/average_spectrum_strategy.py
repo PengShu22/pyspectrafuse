@@ -4,7 +4,6 @@ from pyspectrafuse.consensus_strategy.consensus_strategy_base import ConsensusSt
 import pandas as pd
 import numpy as np
 import logging
-from pyspectrafuse.mgf_convert.parquet2mgf import Parquet2Mgf
 from pyspectrafuse.common.msp_utils import MspUtil
 
 logger = logging.getLogger(__name__)

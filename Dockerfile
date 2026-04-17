@@ -38,10 +38,12 @@ WORKDIR /data/
 
 ## Copy project files
 COPY pyproject.toml .
+COPY README.md .
 COPY pyspectrafuse/ ./pyspectrafuse/
 
 ## Install the package with uv
 RUN uv pip install --system --no-cache .
 
-## Set entrypoint
-ENTRYPOINT ["pyspectrafuse"]
+## No ENTRYPOINT — Nextflow runs commands via /bin/bash
+## Use `pyspectrafuse` as the CLI command in scripts
+CMD ["pyspectrafuse", "--help"]

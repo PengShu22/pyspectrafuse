@@ -36,7 +36,7 @@ class ParquetPathHandler:
 
         if not match:
             raise ValueError(f"Could not extract project ID from path segment: {last_path_part}"
-                             f" (Please ensure the path contains a project identifier starting with letters followed by digits.")
+                             f" (Please ensure the path contains a project identifier starting with letters followed by digits.)")
 
         return match.group(1)
 

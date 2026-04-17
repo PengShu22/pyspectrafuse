@@ -3,6 +3,8 @@
 After resolve_clusters maps new cluster IDs to existing/fresh ones, this
 module appends new PSMs to psm_cluster_membership.parquet and regenerates
 cluster_metadata.parquet with updated statistics and consensus spectra.
+
+Uses DuckDB for aggregation and I/O operations.
 """
 import logging
 from pathlib import Path
@@ -12,6 +14,13 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from pyspectrafuse.common.schemas import CLUSTER_META_SCHEMA, PSM_MEMBERSHIP_SCHEMA
+from pyspectrafuse.common.duckdb_ops import (
+    append_membership_dedup,
+    compute_stats_and_purity,
+    write_parquet_from_df,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,48 +44,11 @@ def append_psm_membership(
     if output_path is None:
         output_path = existing_path
 
-    # Read existing
-    existing_df = pd.read_parquet(existing_path)
-
     # Normalize column name
     if 'resolved_cluster_id' in new_psms_df.columns:
         new_psms_df = new_psms_df.rename(columns={'resolved_cluster_id': 'cluster_id'})
 
-    # Only keep columns that exist in the schema
-    common_cols = [c for c in existing_df.columns if c in new_psms_df.columns]
-    new_psms_df = new_psms_df[common_cols]
-
-    # Concatenate and deduplicate by USI (keep existing)
-    merged = pd.concat([existing_df, new_psms_df], ignore_index=True)
-    merged = merged.drop_duplicates(subset='usi', keep='first')
-    merged = merged.sort_values('cluster_id')
-
-    # Write with the same schema
-    schema = pa.schema([
-        ('cluster_id', pa.string()),
-        ('usi', pa.string()),
-        ('project_accession', pa.string()),
-        ('reference_file_name', pa.string()),
-        ('scan', pa.int32()),
-        ('peptidoform', pa.string()),
-        ('charge', pa.int8()),
-        ('precursor_mz', pa.float64()),
-        ('posterior_error_probability', pa.float64()),
-        ('global_qvalue', pa.float64()),
-        ('species', pa.string()),
-        ('instrument', pa.string()),
-    ])
-
-    # Only use schema columns that exist in the data
-    schema_cols = [f.name for f in schema if f.name in merged.columns]
-    write_schema = pa.schema([f for f in schema if f.name in merged.columns])
-
-    table = pa.Table.from_pandas(merged[schema_cols], schema=write_schema, preserve_index=False)
-    pq.write_table(table, output_path, compression='zstd')
-
-    logger.info(f"PSM membership: {len(existing_df)} existing + {len(new_psms_df)} new "
-                f"→ {len(merged)} total (after dedup) written to {output_path}")
-    return output_path
+    return append_membership_dedup(existing_path, new_psms_df, output_path)
 
 
 def rebuild_cluster_metadata(
@@ -105,27 +77,10 @@ def rebuild_cluster_metadata(
     Returns:
         Output path.
     """
-    psm_df = pd.read_parquet(psm_membership_path)
+    # Compute stats and purity via DuckDB (reads parquet directly, no pandas load)
+    stats_purity = compute_stats_and_purity(psm_membership_path)
 
-    # Compute cluster statistics from PSM table
-    cluster_stats = psm_df.groupby('cluster_id').agg(
-        member_count=('usi', 'count'),
-        project_count=('project_accession', 'nunique'),
-        best_pep=('posterior_error_probability', 'min'),
-        best_qvalue=('global_qvalue', 'min'),
-    ).reset_index()
-
-    # Purity: fraction of most common peptidoform per cluster
-    # Double-groupby is 84x faster than lambda x: x.value_counts().iloc[0]
-    pair_counts = psm_df.groupby(['cluster_id', 'peptidoform']).size().reset_index(name='_cnt')
-    mode_count = pair_counts.groupby('cluster_id')['_cnt'].max()
-    total = psm_df.groupby('cluster_id').size()
-    purity_df = pd.DataFrame({
-        'cluster_id': total.index,
-        'purity': (mode_count / total).values,
-    })
-
-    # Build metadata from consensus + single spectra
+    # Build metadata from consensus + single spectra (stays in pandas for list columns)
     charge_int = int(str(charge).replace('charge', ''))
     parts = []
 
@@ -163,33 +118,14 @@ def rebuild_cluster_metadata(
 
     meta_df = pd.concat(parts, ignore_index=True)
 
-    # Merge with stats and purity
-    meta_df = meta_df.merge(cluster_stats, on='cluster_id', how='left')
-    meta_df = meta_df.merge(purity_df, on='cluster_id', how='left')
+    # Merge with stats and purity from DuckDB
+    meta_df = meta_df.merge(stats_purity, on='cluster_id', how='left')
     meta_df['member_count'] = meta_df['member_count'].fillna(1).astype(int)
     meta_df['project_count'] = meta_df['project_count'].fillna(1).astype(int)
     meta_df['purity'] = meta_df['purity'].fillna(1.0)
 
-    # Write
-    schema = pa.schema([
-        ('cluster_id', pa.string()),
-        ('species', pa.string()),
-        ('instrument', pa.string()),
-        ('charge', pa.int8()),
-        ('peptidoform', pa.string()),
-        ('peptide_sequence', pa.string()),
-        ('consensus_mz_array', pa.list_(pa.float32())),
-        ('consensus_intensity_array', pa.list_(pa.float32())),
-        ('consensus_method', pa.string()),
-        ('precursor_mz', pa.float64()),
-        ('member_count', pa.int32()),
-        ('project_count', pa.int16()),
-        ('best_pep', pa.float64()),
-        ('best_qvalue', pa.float64()),
-        ('purity', pa.float32()),
-    ])
-
-    table = pa.Table.from_pandas(meta_df, schema=schema, preserve_index=False)
+    # Write with canonical schema
+    table = pa.Table.from_pandas(meta_df, schema=CLUSTER_META_SCHEMA, preserve_index=False)
     pq.write_table(table, output_path, compression='zstd')
 
     logger.info(f"Cluster metadata: {len(meta_df)} clusters written to {output_path}")

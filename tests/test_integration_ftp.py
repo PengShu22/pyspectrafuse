@@ -17,7 +17,6 @@ import time
 import logging
 from typing import Optional
 
-from pyspectrafuse.commands.quantmsio2mgf import quantmsio2mgf
 from pyspectrafuse.commands.spectrum2msp import spectrum2msp
 from pyspectrafuse.common.sdrf_utils import SdrfUtil
 from pyspectrafuse.common.parquet_utils import ParquetPathHandler
@@ -199,63 +198,21 @@ def test_parquet_data_structure(ftp_data_dir):
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_convert_mgf_integration(ftp_data_dir, tmp_path):
-    """Test convert-mgf command with real data."""
-    # Ensure parquet file is in parquet_files subdirectory
-    parquet_files_dir = Path(ftp_data_dir) / "parquet_files"
-    parquet_files_dir.mkdir(exist_ok=True)
-    parquet_path = Path(ftp_data_dir) / PARQUET_FILE
-    test_parquet_path = parquet_files_dir / PARQUET_FILE
-    
-    if not test_parquet_path.exists():
-        import shutil
-        shutil.copy2(parquet_path, test_parquet_path)
-    
-    output_dir = tmp_path / "mgf_output"
-    output_dir.mkdir()
-    
-    original_cwd = os.getcwd()
-    try:
-        os.chdir(str(ftp_data_dir))
-        
-        # Use Click's CliRunner to invoke the command properly
-        runner = CliRunner()
-        result = runner.invoke(
-            quantmsio2mgf,
-            [
-                '--parquet_dir', str(ftp_data_dir),
-                '--batch_size', '1000',
-                '--spectra_capacity', '10000',
-                '--task_parallel', '1'
-            ]
-        )
-        
-        # Check if command executed successfully
-        assert result.exit_code == 0, f"Command failed with exit code {result.exit_code}. Output: {result.output}"
-        
-        # Check if MGF files were created
-        mgf_output_dir = Path(ftp_data_dir) / "mgf_output"
-        assert mgf_output_dir.exists(), "MGF output directory was not created"
-        
-        # Find MGF files recursively
-        mgf_files = list(mgf_output_dir.rglob("*.mgf"))
-        assert len(mgf_files) > 0, "No MGF files were created"
-        
-        # Verify MGF file content
-        for mgf_file in mgf_files[:3]:  # Check first 3 files
-            mgf_size = mgf_file.stat().st_size
-            assert mgf_size > 0, f"MGF file is empty: {mgf_file}"
-            
-            # Check that file contains expected MGF format markers
-            with open(mgf_file, 'r') as f:
-                content = f.read(1000)  # Read first 1000 chars
-                assert 'BEGIN IONS' in content or 'BEGIN IONS' in content.upper(), \
-                    f"MGF file doesn't contain expected format markers: {mgf_file}"
-        
-        logger.info(f"Successfully created {len(mgf_files)} MGF file(s)")
-        
-    finally:
-        os.chdir(original_cwd)
+def test_convert_dat_integration(ftp_data_dir, tmp_path):
+    """Test convert-dat command with real data."""
+    from pyspectrafuse.commands.parquet2dat import parquet2dat
+    runner = CliRunner()
+    result = runner.invoke(
+        parquet2dat,
+        [
+            '-p', str(ftp_data_dir),
+            '-o', str(tmp_path / 'dat_output'),
+            '-c', '2',
+        ]
+    )
+    assert result.exit_code == 0, f"Command failed: {result.output}"
+    dat_files = list((tmp_path / 'dat_output').glob('*.dat'))
+    assert len(dat_files) > 0, "No .dat files were created"
 
 
 @pytest.mark.integration

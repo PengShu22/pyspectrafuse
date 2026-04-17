@@ -1,7 +1,7 @@
 """CLI commands for incremental clustering.
 
-Provides two sub-commands:
-- extract-reps: Extract representative spectra from existing cluster DB to MGF.
+Provides sub-commands:
+- extract-reps-dat: Extract representative spectra from existing cluster DB to .dat format.
 - merge-clusters: Resolve re-clustering results and merge into existing DB.
 """
 import logging
@@ -17,34 +17,52 @@ def incremental():
     """Incremental clustering: add new projects without re-clustering everything."""
 
 
-@incremental.command("extract-reps", short_help="Extract representative spectra to MGF")
+@incremental.command("extract-reps-dat",
+                     short_help="Extract representative spectra to .dat format")
 @click.option('--cluster_metadata', required=True,
               type=click.Path(exists=True, file_okay=True, dir_okay=False),
               help='Path to existing cluster_metadata.parquet')
-@click.option('--output_mgf', required=True,
-              type=click.Path(file_okay=True, dir_okay=False),
-              help='Output MGF file path for representative spectra')
+@click.option('--output_dir', required=True,
+              type=click.Path(file_okay=False, dir_okay=True),
+              help='Output directory for .dat, .scan_info.dat, .scan_titles.txt')
+@click.option('--charge_filter', default=None, type=int,
+              help='Only extract representatives with this charge')
+@click.option('--file_idx', default=0, type=int,
+              help='File index for .dat struct (default 0)')
 @click.option('--max_clusters', default=None, type=int,
               help='Limit number of representatives (for testing)')
-def extract_reps(cluster_metadata: str, output_mgf: str, max_clusters: int) -> None:
-    """Extract one representative spectrum per cluster to MGF for re-clustering."""
-    from pyspectrafuse.incremental.representative_mgf import extract_representatives
+def extract_reps_dat(cluster_metadata: str, output_dir: str,
+                     charge_filter: int, file_idx: int,
+                     max_clusters: int) -> None:
+    """Extract one representative spectrum per cluster to .dat binary format.
 
-    count = extract_representatives(
+    Writes MaRaCluster-compatible .dat, .scan_info.dat, and .scan_titles.txt
+    files. Representative scan titles use the format ``rep:{cluster_id}`` for
+    downstream identification during cluster resolution.
+    """
+    from pyspectrafuse.incremental.representative_dat import extract_representatives_dat
+
+    written, skipped, dat_path, scaninfo_path, titles_path = extract_representatives_dat(
         cluster_metadata_path=cluster_metadata,
-        output_mgf_path=output_mgf,
+        output_dir=output_dir,
+        charge_filter=charge_filter,
+        file_idx=file_idx,
         max_clusters=max_clusters,
     )
-    click.echo(f"Extracted {count} representative spectra to {output_mgf}")
+    click.echo(f"Extracted {written} representatives ({skipped} skipped)")
+    click.echo(f"  .dat:        {dat_path}")
+    click.echo(f"  .scan_info:  {scaninfo_path}")
+    click.echo(f"  .scan_titles: {titles_path}")
 
 
-@incremental.command("merge-clusters", short_help="Merge incremental clustering results")
+@incremental.command("merge-clusters",
+                     short_help="Merge incremental clustering results")
 @click.option('--cluster_tsv', required=True,
               type=click.Path(exists=True, file_okay=True, dir_okay=False),
               help='MaRaCluster output TSV from incremental clustering')
-@click.option('--rep_mgf', required=True,
-              type=click.Path(exists=True, file_okay=True, dir_okay=False),
-              help='Representative MGF used in the incremental clustering run')
+@click.option('--scan_titles_dir', required=True,
+              type=click.Path(exists=True, file_okay=False, dir_okay=True),
+              help='Directory containing all scan_titles.txt files (reps + new data)')
 @click.option('--existing_metadata', required=True,
               type=click.Path(exists=True, file_okay=True, dir_okay=False),
               help='Path to existing cluster_metadata.parquet')
@@ -53,7 +71,7 @@ def extract_reps(cluster_metadata: str, output_mgf: str, max_clusters: int) -> N
               help='Path to existing psm_cluster_membership.parquet')
 @click.option('--new_parquet_dir', required=True,
               type=click.Path(exists=True, file_okay=False, dir_okay=True),
-              help='Directory with new project parquet + SDRF files')
+              help='Directory with new project parquet files')
 @click.option('--species', required=True, help='Species name')
 @click.option('--instrument', required=True, help='Instrument name')
 @click.option('--charge', required=True, help='Charge value')
@@ -64,7 +82,7 @@ def extract_reps(cluster_metadata: str, output_mgf: str, max_clusters: int) -> N
               help='Output directory (defaults to same as existing files)')
 def merge_clusters(
     cluster_tsv: str,
-    rep_mgf: str,
+    scan_titles_dir: str,
     existing_metadata: str,
     existing_membership: str,
     new_parquet_dir: str,
@@ -77,21 +95,38 @@ def merge_clusters(
     """Resolve incremental clustering and merge into existing cluster DB.
 
     Workflow:
-    1. Parse MaRaCluster TSV and resolve new cluster IDs to existing ones
-    2. Inject cluster info into new parquet data
-    3. Append new PSMs to membership table
-    4. Re-run consensus strategy on updated clusters
-    5. Rebuild cluster metadata
+    1. Parse all scan_titles.txt from scan_titles_dir to identify reps vs new data
+    2. Resolve new MaRaCluster cluster IDs to existing/fresh IDs
+    3. Inject cluster info into new parquet data
+    4. Append new PSMs to membership table
+    5. Recompute consensus and rebuild cluster metadata
     """
-    from pyspectrafuse.incremental.resolve_clusters import resolve_incremental_clusters
+    import glob
+    import re
+
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq_write
+
+    from pyspectrafuse.incremental.resolve_clusters_dat import resolve_incremental_clusters
     from pyspectrafuse.incremental.merge_results import append_psm_membership
     from pyspectrafuse.cluster_parquet_combine.combine_cluster_and_parquet import CombineCluster2Parquet
     from pyspectrafuse.cluster_parquet_combine.cluster_res_handler import ClusterResHandler
-    from pyspectrafuse.commands.spectrum2msp import find_target_ext_files
+    from pyspectrafuse.commands.spectrum2msp import find_target_ext_files, create_consensus_strategy
+    from pyspectrafuse.common.schemas import CLUSTER_META_SCHEMA
+    from pyspectrafuse.common.duckdb_ops import compute_stats_and_purity
 
-    # Step 1: Resolve cluster IDs
+    # Collect all scan_titles files from the directory
+    scan_titles_files = sorted(glob.glob(str(Path(scan_titles_dir) / '*.scan_titles.txt')))
+    if not scan_titles_files:
+        raise click.ClickException(f"No .scan_titles.txt files found in {scan_titles_dir}")
+
+    click.echo(f"Found {len(scan_titles_files)} scan_titles files in {scan_titles_dir}")
+
+    # Step 1: Resolve cluster IDs using scan_titles
     click.echo("Resolving incremental cluster IDs...")
-    id_map, new_spectra_df = resolve_incremental_clusters(cluster_tsv, rep_mgf)
+    id_map, new_spectra_df = resolve_incremental_clusters(cluster_tsv, scan_titles_files)
     click.echo(f"  Resolved {len(id_map)} cluster IDs, {len(new_spectra_df)} new spectra")
 
     # Step 2: Load new project data with cluster assignments
@@ -106,7 +141,6 @@ def merge_clusters(
     # Build cluster map dict using the resolved IDs
     cluster_res_dict = ClusterResHandler.get_cluster_dict(
         Path(cluster_tsv), species, instrument, charge)
-    # Remap values through the id_map
     resolved_dict = {k: id_map.get(str(v), str(v)) for k, v in cluster_res_dict.items()}
 
     combiner = CombineCluster2Parquet()
@@ -126,10 +160,8 @@ def merge_clusters(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     out_membership = str(Path(output_dir) / 'psm_cluster_membership.parquet')
-    # Build a minimal PSM DataFrame from new_df
-    from pyspectrafuse.common.parquet_utils import ParquetPathHandler
-    import pandas as pd
 
+    from pyspectrafuse.common.parquet_utils import ParquetPathHandler
     basename = ParquetPathHandler(parquet_files[0]).get_item_info()
     psm_new = pd.DataFrame({
         'cluster_id': new_df['cluster_accession'].astype(str),
@@ -148,31 +180,12 @@ def merge_clusters(
 
     append_psm_membership(existing_membership, psm_new, out_membership)
 
-    # Step 4: Update cluster metadata with new spectra
-    click.echo("Updating cluster metadata...")
-    import re
-    import numpy as np
-    import pyarrow as pa
-    import pyarrow.parquet as pq_write
-    from pyspectrafuse.commands.spectrum2msp import create_consensus_strategy
+    # Step 4: Compute stats + purity via DuckDB (reads parquet directly)
+    click.echo("Computing cluster statistics...")
+    stats_purity = compute_stats_and_purity(out_membership)
 
     existing_meta = pd.read_parquet(existing_metadata)
     out_metadata = str(Path(output_dir) / 'cluster_metadata.parquet')
-
-    # Recompute stats from merged membership
-    full_membership = pd.read_parquet(out_membership)
-    cluster_stats = full_membership.groupby('cluster_id').agg(
-        member_count=('usi', 'count'),
-        project_count=('project_accession', 'nunique'),
-        best_pep=('posterior_error_probability', 'min'),
-        best_qvalue=('global_qvalue', 'min'),
-    ).reset_index()
-
-    # Purity — double-groupby is 84x faster than lambda x: x.value_counts().iloc[0]
-    pair_counts = full_membership.groupby(['cluster_id', 'peptidoform']).size().reset_index(name='_cnt')
-    mode_count = pair_counts.groupby('cluster_id')['_cnt'].max()
-    total = full_membership.groupby('cluster_id').size()
-    purity_series = (mode_count / total)
 
     # Prepare new spectra grouped by cluster
     new_df_copy = new_df.copy()
@@ -187,14 +200,12 @@ def merge_clusters(
     new_for_existing_df = new_df_copy[new_for_existing_mask]
     new_brand_new_df = new_df_copy[~new_for_existing_mask]
 
-    # ── Update existing clusters ──
+    # -- Update existing clusters --
     existing_clusters_updated = 0
     if len(new_for_existing_df) > 0:
         meta_indexed = existing_meta.set_index('cluster_id')
 
         if method_type == 'bin':
-            # BIN strategy: recompute consensus from existing consensus + new spectra
-            # Treat the stored consensus as one additional "spectrum" in the bin
             strategy = create_consensus_strategy('bin')
             affected_ids = new_for_existing_df['cluster_accession'].unique()
 
@@ -209,7 +220,6 @@ def merge_clusters(
                 if existing_mz is None or len(existing_mz) == 0:
                     continue
 
-                # Build a mini-DataFrame with existing consensus + new spectra
                 existing_mz = np.array(existing_mz, dtype=np.float32)
                 existing_int = np.array(existing_int, dtype=np.float32)
 
@@ -285,7 +295,7 @@ def merge_clusters(
             if 'cluster_id' not in existing_meta.columns:
                 existing_meta = existing_meta.reset_index()
 
-    # ── Build metadata for brand-new clusters ──
+    # -- Build metadata for brand-new clusters --
     new_clusters_added = 0
     if len(new_brand_new_df) > 0:
         charge_int = int(str(charge).replace('charge', ''))
@@ -293,7 +303,6 @@ def merge_clusters(
         new_clusters_added = len(new_cluster_ids)
 
         if method_type == 'bin' and len(new_brand_new_df) > len(new_cluster_ids):
-            # Some new clusters have multiple members — run BIN consensus on them
             strategy = create_consensus_strategy('bin')
             multi_mask = new_brand_new_df['cluster_accession'].isin(
                 new_brand_new_df['cluster_accession'].value_counts()[
@@ -303,9 +312,7 @@ def merge_clusters(
 
             new_meta_parts = []
 
-            # Process multi-member new clusters with BIN
             if not multi_df.empty:
-                # Prepare for consensus strategy
                 multi_df = multi_df.copy()
                 pep_s = multi_df['peptidoform'].astype(str)
                 needs_ch = ~pep_s.str.contains('/', regex=False)
@@ -337,10 +344,8 @@ def merge_clusters(
                         new_meta_parts.append(part)
                 except Exception as e:
                     logger.warning(f"BIN consensus failed for new clusters: {e}")
-                    # Fall back to best-spectrum for failed clusters
                     single_new_df = pd.concat([single_new_df, multi_df])
 
-            # Process single-member new clusters (same for both strategies)
             if not single_new_df.empty:
                 best_idx = single_new_df.groupby('cluster_accession')['global_qvalue'].idxmin()
                 best_single = single_new_df.loc[best_idx].set_index('cluster_accession')
@@ -386,6 +391,7 @@ def merge_clusters(
                 ~needs_charge,
                 pep_series + '/' + best_new['charge'].astype(int).astype(str))
 
+            charge_int = int(str(charge).replace('charge', ''))
             new_meta_df = pd.DataFrame({
                 'cluster_id': best_new.index.astype(str),
                 'species': species,
@@ -410,38 +416,21 @@ def merge_clusters(
 
     meta['cluster_id'] = meta['cluster_id'].astype(str)
 
-    # Update stats from merged membership
-    stats_map = cluster_stats.set_index('cluster_id')
-    for col in ['member_count', 'project_count', 'best_pep', 'best_qvalue']:
-        meta[col] = meta['cluster_id'].map(stats_map[col]).fillna(meta[col])
-    meta['purity'] = meta['cluster_id'].map(purity_series).fillna(meta['purity'])
-
-    schema = pa.schema([
-        ('cluster_id', pa.string()),
-        ('species', pa.string()),
-        ('instrument', pa.string()),
-        ('charge', pa.int8()),
-        ('peptidoform', pa.string()),
-        ('peptide_sequence', pa.string()),
-        ('consensus_mz_array', pa.list_(pa.float32())),
-        ('consensus_intensity_array', pa.list_(pa.float32())),
-        ('consensus_method', pa.string()),
-        ('precursor_mz', pa.float64()),
-        ('member_count', pa.int32()),
-        ('project_count', pa.int16()),
-        ('best_pep', pa.float64()),
-        ('best_qvalue', pa.float64()),
-        ('purity', pa.float32()),
-    ])
+    # Update stats from DuckDB-computed stats_purity
+    stats_map = stats_purity.set_index('cluster_id')
+    for col in ['member_count', 'project_count', 'best_pep', 'best_qvalue', 'purity']:
+        if col in stats_map.columns:
+            meta[col] = meta['cluster_id'].map(stats_map[col]).fillna(meta[col])
 
     # Ensure correct types
-    meta['cluster_id'] = meta['cluster_id'].astype(str)
     meta['charge'] = meta['charge'].astype(int)
     meta['member_count'] = meta['member_count'].astype(int)
     meta['project_count'] = meta['project_count'].astype(int)
     meta['purity'] = meta['purity'].astype(float)
 
-    table = pa.Table.from_pandas(meta[[f.name for f in schema]], schema=schema, preserve_index=False)
+    table = pa.Table.from_pandas(
+        meta[[f.name for f in CLUSTER_META_SCHEMA]],
+        schema=CLUSTER_META_SCHEMA, preserve_index=False)
     pq_write.write_table(table, out_metadata, compression='zstd')
 
     click.echo(f"Incremental merge complete:")
