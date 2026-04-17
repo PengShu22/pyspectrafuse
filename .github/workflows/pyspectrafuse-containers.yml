@@ -2,9 +2,9 @@ name: pyspectrafuse Containers Build and Sync
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [master, main]
   pull_request:
-    branches: [ "master" ]
+    branches: [master, main]
     paths:
       - 'Dockerfile'
       - '.github/workflows/**'
@@ -17,11 +17,6 @@ on:
         required: false
         default: true
         type: 'boolean'
-      push_release:
-        description: 'Push as release version'
-        required: false
-        default: false
-        type: boolean
 
 jobs:
   build-pyspectrafuse:
@@ -32,8 +27,6 @@ jobs:
       packages: write
 
     env:
-      RETRY_TIMES: 3
-      RETRY_DELAY: 30
       SINGULARITY_TMPDIR: /tmp/singularity-tmp
       SINGULARITY_CACHEDIR: /tmp/singularity-cache
       SINGULARITY_LIBRARYDIR: /tmp/singularity-lib
@@ -50,10 +43,10 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      uses: docker/setup-buildx-action@v3
 
     - name: Log in to GitHub Container Registry
-      uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef
+      uses: docker/login-action@v3
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
@@ -65,15 +58,9 @@ jobs:
         VERSION=$(grep '^version = ' pyproject.toml | cut -d'"' -f2)
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
         echo "Extracted version: $VERSION"
-        # Extract major and minor version
-        MAJOR=$(echo $VERSION | cut -d'.' -f1)
-        MINOR=$(echo $VERSION | cut -d'.' -f2)
-        echo "MAJOR=$MAJOR" >> $GITHUB_OUTPUT
-        echo "MINOR=$MINOR" >> $GITHUB_OUTPUT
-        echo "Major.Minor: $MAJOR.$MINOR"
 
     - name: Build and Push pyspectrafuse image
-      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25
+      uses: docker/build-push-action@v6
       with:
         context: .
         push: ${{ (github.event.inputs.push_images == true || github.event.inputs.push_images == '') && (github.event_name != 'pull_request') }}
@@ -85,31 +72,26 @@ jobs:
         build-args: |
           BUILDKIT_INLINE_CACHE=1
         provenance: false
-        # Note: Only building for linux/amd64
         platforms: linux/amd64
 
     - name: Test container functionality
       run: |
-        echo "Testing container import and CLI..."
-        docker run --rm ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} --help || docker run --rm ghcr.io/bigbio/pyspectrafuse:latest --help
+        echo "Testing CLI..."
+        docker run --rm ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} --help
         echo "Testing Python imports..."
-        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "from pyspectrafuse.pyspectrafuse import main; print('CLI import successful')" || docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:latest -c "from pyspectrafuse.pyspectrafuse import main; print('CLI import successful')"
-        echo "Testing consensus strategy imports..."
-        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumStrategy; print('BestSpectrumStrategy import successful')" || docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:latest -c "from pyspectrafuse.consensus_strategy.best_spetrum_strategy import BestSpectrumStrategy; print('BestSpectrumStrategy import successful')"
-        echo "Testing spectrum_utils import (numba caching test)..."
-        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "import spectrum_utils.spectrum as sus; print('spectrum_utils import successful')" || docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:latest -c "import spectrum_utils.spectrum as sus; print('spectrum_utils import successful')"
+        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "from pyspectrafuse.pyspectrafuse import main; print('CLI import OK')"
+        echo "Testing dat conversion import..."
+        docker run --rm --entrypoint python ghcr.io/bigbio/pyspectrafuse:${{ steps.version.outputs.VERSION }} -c "from pyspectrafuse.maracluster_dat import parquet_to_dat; print('dat conversion import OK')"
         echo "All container tests passed!"
 
     - name: Free up disk space after build
       run: |
         docker image rm ghcr.io/bigbio/pyspectrafuse:latest || true
         docker system prune -af || true
-        sudo apt-get clean
-        sudo rm -rf /var/lib/apt/lists/*
 
     - name: Set up Singularity
       if: ${{ (github.event.inputs.push_images == true || github.event.inputs.push_images == '') && (github.event_name != 'pull_request') }}
-      uses: eWaterCycle/setup-singularity@931d4e31109e875b13309ae1d07c70ca8fbc8537
+      uses: eWaterCycle/setup-singularity@v7
       with:
         singularity-version: 3.8.7
 
@@ -125,23 +107,9 @@ jobs:
 
     - name: Login and Deploy Container
       if: (github.event_name != 'pull_request')
-      env:
-        IS_RELEASE: ${{ github.event_name == 'release' }}
-        IS_MASTER: ${{ github.ref == 'refs/heads/master' && github.event_name == 'push' }}
       run: |
         echo ${{ secrets.GHCR_TOKEN }} | singularity remote login -u ${{ secrets.GHCR_USERNAME }} --password-stdin oras://ghcr.io
         singularity push pyspectrafuse.sif oras://ghcr.io/bigbio/pyspectrafuse-sif:${{ steps.version.outputs.VERSION }}
-        if [[ "${{ env.IS_RELEASE }}" == "true" || "${{ env.IS_MASTER }}" == "true" ]]; then
+        if [[ "${{ github.event_name }}" == "release" || "${{ github.ref }}" == "refs/heads/master" ]]; then
           singularity push pyspectrafuse.sif oras://ghcr.io/bigbio/pyspectrafuse-sif:latest
         fi
-
-    - name: Notify on success
-      if: success()
-      run: |
-        echo "::notice::Successfully built and pushed pyspectrafuse Docker and Singularity images to ghcr.io/bigbio"
-
-    - name: Notify on failure
-      if: failure()
-      run: |
-        echo "::error::Failed to build or push pyspectrafuse images. Check the logs for details."
-
