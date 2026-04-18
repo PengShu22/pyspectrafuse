@@ -4,7 +4,7 @@ Replaces pandas groupby/concat/dedup patterns with SQL queries that work
 efficiently at all scales. Each public function creates its own in-memory
 DuckDB connection (batch operations, not long-lived).
 
-Used by: build_cluster_db.py, cluster2parquet.py, incremental.py, merge_results.py
+Used by: build_cluster_db.py, incremental.py, merge_results.py, resolve_clusters_dat.py
 """
 import logging
 from pathlib import Path

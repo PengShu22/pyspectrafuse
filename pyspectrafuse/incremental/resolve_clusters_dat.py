@@ -1,7 +1,6 @@
 """Resolve incremental clustering results using scan_titles (dat-mode).
 
-Replaces resolve_clusters.py which parsed MGF files. This version reads
-scan_titles.txt files to identify representative spectra (titles starting
+Reads scan_titles.txt files to identify representative spectra (titles starting
 with ``rep:``) and map new MaRaCluster cluster IDs back to existing ones.
 
 Terminology:
@@ -24,13 +23,14 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 _REP_PREFIX = "rep:"
+_TITLE_PATTERN = re.compile(r'id=mzspec::(.+?):scan:(\d+):(.+?)$')
 
 
 def parse_cluster_tsv(tsv_path: str) -> pd.DataFrame:
     """Read a MaRaCluster TSV into a DataFrame.
 
     Returns:
-        DataFrame with columns [mgf_path, scannr, new_cluster_id].
+        DataFrame with columns [mgf_path, scannr, new_cluster_id, mgf_basename].
     """
     df = pd.read_csv(tsv_path, sep='\t', header=None,
                      names=['mgf_path', 'scannr', 'new_cluster_id'])
@@ -45,13 +45,16 @@ def parse_cluster_tsv(tsv_path: str) -> pd.DataFrame:
 def parse_all_scan_titles(scan_titles_files: List[str]) -> pd.DataFrame:
     """Parse scan_titles.txt files into a unified lookup table.
 
+    For representative titles (``rep:{cluster_id}``), ``old_cluster_id`` is set.
+    For new-data titles (``id=mzspec::{run}:scan:{n}:{peptidoform}/{charge}``),
+    the run_file_name / orig_scan / peptidoform / parsed_charge columns are set.
+
     Returns:
-        DataFrame with columns [mgf_basename, scannr, title, is_rep, old_cluster_id].
+        DataFrame with columns [mgf_basename, scannr, title, is_rep,
+        old_cluster_id, run_file_name, orig_scan, peptidoform, parsed_charge].
     """
     rows = []
     for titles_path in scan_titles_files:
-        # Derive mgf_basename from the scan_titles filename
-        # e.g., "PXD014877.psm_charge2.scan_titles.txt" -> "PXD014877.psm_charge2.mgf"
         stem = Path(titles_path).name.replace('.scan_titles.txt', '')
         mgf_basename = f'{stem}.mgf'
 
@@ -62,12 +65,34 @@ def parse_all_scan_titles(scan_titles_files: List[str]) -> pd.DataFrame:
                     continue
                 scannr = int(parts[1])
                 title = parts[2]
-                is_rep = title.startswith(_REP_PREFIX)
-                old_cluster_id = title[len(_REP_PREFIX):] if is_rep else None
-                rows.append((mgf_basename, scannr, title, is_rep, old_cluster_id))
+
+                if title.startswith(_REP_PREFIX):
+                    rows.append((mgf_basename, scannr, title, True,
+                                 title[len(_REP_PREFIX):],
+                                 None, None, None, None))
+                    continue
+
+                m = _TITLE_PATTERN.match(title)
+                if m:
+                    run_file = m.group(1)
+                    orig_scan = int(m.group(2))
+                    pep_charge = m.group(3)
+                    last_slash = pep_charge.rfind('/')
+                    if last_slash > 0:
+                        peptidoform = pep_charge[:last_slash]
+                        parsed_charge = int(pep_charge[last_slash + 1:])
+                    else:
+                        peptidoform = pep_charge
+                        parsed_charge = 0
+                    rows.append((mgf_basename, scannr, title, False, None,
+                                 run_file, orig_scan, peptidoform, parsed_charge))
+                else:
+                    rows.append((mgf_basename, scannr, title, False, None,
+                                 None, None, None, None))
 
     return pd.DataFrame(rows, columns=[
-        'mgf_basename', 'scannr', 'title', 'is_rep', 'old_cluster_id'])
+        'mgf_basename', 'scannr', 'title', 'is_rep', 'old_cluster_id',
+        'run_file_name', 'orig_scan', 'peptidoform', 'parsed_charge'])
 
 
 def resolve_incremental_clusters(
@@ -82,19 +107,15 @@ def resolve_incremental_clusters(
     3. For representatives, map new_cluster_id → old_cluster_id.
     4. For new clusters with no representative, mint a fresh UUID.
 
-    If multiple old clusters merge into one new cluster (representatives from
-    different old clusters land in the same new cluster), the first old cluster
+    If multiple old clusters merge into one new cluster, the first old cluster
     ID wins (deterministic).
-
-    Args:
-        cluster_tsv_path: Path to MaRaCluster output TSV.
-        scan_titles_files: Paths to all scan_titles.txt files (reps + new data).
 
     Returns:
         Tuple of:
         - id_map: {new_cluster_id → resolved_cluster_id}
-        - new_spectra_df: DataFrame of non-representative spectra with
-          columns [mgf_basename, scannr, new_cluster_id, resolved_cluster_id, title].
+        - new_spectra_df: DataFrame of non-representative spectra with columns
+          [mgf_basename, scannr, new_cluster_id, resolved_cluster_id, title,
+           run_file_name, orig_scan, peptidoform, parsed_charge].
     """
     cluster_df = parse_cluster_tsv(cluster_tsv_path)
     titles_df = parse_all_scan_titles(scan_titles_files)
@@ -103,16 +124,13 @@ def resolve_incremental_clusters(
     logger.info(f"Scan titles: {len(titles_df)} entries "
                 f"({titles_df['is_rep'].sum()} representatives)")
 
-    # Join cluster assignments with scan_titles
     merged = cluster_df.merge(titles_df, on=['mgf_basename', 'scannr'], how='left')
 
-    # Split into representative and new spectra
     rep_rows = merged[merged['is_rep'] == True].copy()
     new_rows = merged[merged['is_rep'] != True].copy()
 
     logger.info(f"Matched: {len(rep_rows)} representatives, {len(new_rows)} new spectra")
 
-    # Build new_cluster_id → old_cluster_id mapping from representatives
     new_to_old: Dict[str, list] = {}
     for _, row in rep_rows.iterrows():
         new_cid = str(row['new_cluster_id'])
@@ -120,7 +138,6 @@ def resolve_incremental_clusters(
         if old_cid is not None:
             new_to_old.setdefault(new_cid, []).append(old_cid)
 
-    # Resolve: for each new_cluster_id, pick the old_id (or mint fresh)
     id_map: Dict[str, str] = {}
     merge_count = 0
 
@@ -139,9 +156,136 @@ def resolve_incremental_clusters(
     if merge_count > 0:
         logger.info(f"Total cluster merges: {merge_count}")
 
-    # Tag new spectra with resolved IDs
-    new_rows = new_rows.copy()
     new_rows['resolved_cluster_id'] = (
         new_rows['new_cluster_id'].astype(str).map(id_map))
 
     return id_map, new_rows
+
+
+def load_new_spectra_with_arrays(
+    new_rows: pd.DataFrame,
+    parquet_paths: List[str],
+    charge_int: int,
+    project_accession: str,
+) -> pd.DataFrame:
+    """Enrich resolved new-spectra rows with PSM data from source parquets.
+
+    Joins ``new_rows`` (from :func:`resolve_incremental_clusters`) with the
+    project's PSM parquet files by ``(run_file_name, orig_scan)`` via DuckDB,
+    pulling in precursor_mz, PEP, q-value, mz_array, and intensity_array.
+    Builds USIs in the same ``mzspec:{dataset}:{run}:scan:{n}:{peptidoform}/{z}``
+    format as :mod:`build_cluster_db`.
+
+    Args:
+        new_rows: Non-representative spectra with resolved_cluster_id.
+        parquet_paths: PSM parquet files for the new project.
+        charge_int: Charge state to filter by.
+        project_accession: Dataset name used in the USI prefix.
+
+    Returns:
+        DataFrame with columns [cluster_accession, usi, reference_file_name,
+        scan, peptidoform, charge, pepmass, posterior_error_probability,
+        global_qvalue, mz_array, intensity_array].
+    """
+    if new_rows.empty or not parquet_paths:
+        return pd.DataFrame()
+
+    from pyspectrafuse.common.duckdb_ops import _create_connection, _detect_scan_expr
+
+    keys = new_rows[['run_file_name', 'orig_scan']].dropna().drop_duplicates().copy()
+    keys['orig_scan'] = keys['orig_scan'].astype(int)
+
+    conn = _create_connection()
+    try:
+        conn.register('needed_keys', keys)
+
+        parts = []
+        for ppath in parquet_paths:
+            cols_df = conn.execute(
+                f"SELECT name FROM parquet_schema('{ppath}')").fetchdf()
+            available = set(cols_df['name'])
+
+            if 'mz_array' not in available or 'intensity_array' not in available:
+                continue
+
+            run_col = 'run_file_name' if 'run_file_name' in available else 'reference_file_name'
+            charge_col = 'charge' if 'charge' in available else 'precursor_charge'
+
+            mz_candidates = [c for c in ('observed_mz', 'calculated_mz',
+                                         'exp_mass_to_charge') if c in available]
+            mz_expr = (f"COALESCE({', '.join(mz_candidates)}, 0.0)"
+                       if mz_candidates else '0.0')
+
+            pep_col = ('posterior_error_probability'
+                       if 'posterior_error_probability' in available else 'NULL')
+
+            scan_expr = _detect_scan_expr(conn, ppath)
+
+            if 'global_qvalue' in available:
+                qvalue_expr = 'global_qvalue'
+            elif 'additional_scores' in available:
+                qvalue_expr = """(
+                    SELECT s.score_value
+                    FROM UNNEST(additional_scores) AS t(s)
+                    WHERE s.score_name = 'global_qvalue'
+                    LIMIT 1
+                )"""
+            else:
+                qvalue_expr = 'NULL'
+
+            parts.append(f"""
+                SELECT
+                    {run_col} AS run_file_name,
+                    {scan_expr} AS orig_scan,
+                    {mz_expr} AS precursor_mz,
+                    {pep_col} AS posterior_error_probability,
+                    {qvalue_expr} AS global_qvalue,
+                    mz_array,
+                    intensity_array
+                FROM read_parquet('{ppath}')
+                WHERE {charge_col} = {charge_int}
+            """)
+
+        if not parts:
+            return pd.DataFrame()
+
+        union_sql = " UNION ALL ".join(parts)
+        psm_data = conn.execute(f"""
+            SELECT s.*
+            FROM ({union_sql}) s
+            SEMI JOIN needed_keys k
+                ON s.run_file_name = k.run_file_name
+                AND s.orig_scan = k.orig_scan
+        """).fetchdf()
+    finally:
+        conn.close()
+
+    if psm_data.empty:
+        return pd.DataFrame()
+
+    psm_data['orig_scan'] = psm_data['orig_scan'].astype(int)
+    merged = new_rows.merge(psm_data, on=['run_file_name', 'orig_scan'], how='inner')
+
+    if merged.empty:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        'cluster_accession': merged['resolved_cluster_id'].astype(str),
+        'reference_file_name': merged['run_file_name'].astype(str),
+        'scan': merged['orig_scan'].astype(int),
+        'peptidoform': merged['peptidoform'].astype(str),
+        'charge': merged['parsed_charge'].fillna(charge_int).astype(int),
+        'pepmass': pd.to_numeric(merged['precursor_mz'], errors='coerce').astype(float),
+        'posterior_error_probability': pd.to_numeric(
+            merged['posterior_error_probability'], errors='coerce').astype(float),
+        'global_qvalue': pd.to_numeric(
+            merged['global_qvalue'], errors='coerce').astype(float),
+        'mz_array': merged['mz_array'],
+        'intensity_array': merged['intensity_array'],
+    })
+    out['usi'] = ('mzspec:' + project_accession + ':'
+                  + out['reference_file_name'] + ':scan:'
+                  + out['scan'].astype(str) + ':'
+                  + out['peptidoform'] + '/'
+                  + out['charge'].astype(str))
+    return out

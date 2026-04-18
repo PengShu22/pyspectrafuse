@@ -261,6 +261,22 @@ def build_cluster_db(
     best_keys['project_count'] = best_keys['project_count'].fillna(1).astype(np.int16)
     del stats_purity; gc.collect()
 
+    # Aggregate source_datasets per cluster (DISTINCT project_accession list)
+    conn_prov = duckdb.connect(':memory:')
+    try:
+        sources_df = conn_prov.execute(f"""
+            SELECT cluster_id,
+                   list_distinct(array_agg(project_accession)) AS source_datasets
+            FROM read_parquet('{psm_path}')
+            GROUP BY cluster_id
+        """).fetchdf()
+    finally:
+        conn_prov.close()
+    best_keys = best_keys.merge(sources_df, on='cluster_id', how='left')
+    best_keys['source_datasets'] = best_keys['source_datasets'].apply(
+        lambda x: list(x) if isinstance(x, (list, np.ndarray)) else list(set(dataset_names)))
+    del sources_df; gc.collect()
+
     # ── Write cluster metadata in chunks (avoids loading all arrays at once) ──
     meta_path = str(out_dir / 'cluster_metadata.parquet')
     writer = None
@@ -311,6 +327,8 @@ def build_cluster_db(
             'best_pep': chunk_with_arrays['best_pep'].values if 'best_pep' in chunk_with_arrays.columns else np.nan,
             'best_qvalue': chunk_with_arrays['best_qvalue'].values if 'best_qvalue' in chunk_with_arrays.columns else np.nan,
             'purity': chunk_with_arrays['purity'].values,
+            'is_reused_cluster': False,
+            'source_datasets': chunk_with_arrays['source_datasets'].values if 'source_datasets' in chunk_with_arrays.columns else [list(set(dataset_names)) for _ in range(len(chunk_with_arrays))],
         })
         del chunk_with_arrays; gc.collect()
 
@@ -339,7 +357,7 @@ def build_cluster_db(
               help='MaRaCluster cluster TSV file')
 @click.option('--scan_titles', required=True, multiple=True,
               type=click.Path(exists=True),
-              help='scan_titles.txt file(s) from parquet_to_dat (one per dataset)')
+              help='scan_titles.txt file(s) from parquet_to_dat (one per dataset; include rep scan_titles too when merging into an existing DB)')
 @click.option('--parquet_dir', required=True, multiple=True,
               type=click.Path(exists=True),
               help='Parquet directory/directories containing PSM data')
@@ -355,33 +373,75 @@ def build_cluster_db(
               help='Consensus spectrum method (default: best)')
 @click.option('--chunk_size', default=200_000, type=int,
               help='Clusters per chunk for memory-efficient array loading')
+@click.option('--existing_metadata', default=None,
+              type=click.Path(exists=True, file_okay=True, dir_okay=False),
+              help='Existing cluster_metadata.parquet to merge into (when reps are present)')
+@click.option('--existing_membership', default=None,
+              type=click.Path(exists=True, file_okay=True, dir_okay=False),
+              help='Existing psm_cluster_membership.parquet to append to (when reps are present)')
 def build_cluster_db_cmd(cluster_tsv, scan_titles, parquet_dir, dataset_name,
                          species, instrument, charge, output_dir,
-                         method_type, chunk_size):
+                         method_type, chunk_size,
+                         existing_metadata, existing_membership):
     """Build cluster_metadata.parquet and psm_cluster_membership.parquet
     from dat-bypass pipeline output.
 
     Uses scan_titles.txt files to map MaRaCluster dat indices back to
     original spectra in the parquet files. DuckDB-powered for efficient
     joins and aggregations at any scale.
+
+    When ``--existing_metadata`` and ``--existing_membership`` are supplied,
+    pre-existing cluster IDs (whose consensus spectra were re-clustered
+    as representatives with ``rep:{cluster_id}`` scan titles) are reused and
+    the new data is merged into the existing DB instead of creating a fresh one.
     """
     if len(scan_titles) != len(dataset_name):
         raise click.ClickException(
             f"Number of --scan_titles ({len(scan_titles)}) must match "
             f"--dataset_name ({len(dataset_name)})")
+    if bool(existing_metadata) != bool(existing_membership):
+        raise click.ClickException(
+            "--existing_metadata and --existing_membership must be provided together")
 
-    meta_path, psm_path = build_cluster_db(
-        cluster_tsv=cluster_tsv,
-        scan_titles_files=list(scan_titles),
-        parquet_dirs=list(parquet_dir),
-        dataset_names=list(dataset_name),
-        species=species,
-        instrument=instrument,
-        charge_str=charge,
-        output_dir=output_dir,
-        method_type=method_type,
-        chunk_size=chunk_size,
-    )
+    if existing_metadata and existing_membership:
+        from pyspectrafuse.incremental.merge_results import merge_into_existing_db
+        # Merge into existing DB. Uses the FIRST parquet_dir/dataset_name as the
+        # "new data" source — callers invoking this mode are expected to pass
+        # exactly one new-data parquet_dir plus any number of rep scan_titles.
+        from pyspectrafuse.commands.spectrum2msp import find_target_ext_files
+        new_parquet_paths = []
+        for pdir in parquet_dir:
+            new_parquet_paths.extend(find_target_ext_files(pdir, '.parquet'))
+        if not new_parquet_paths:
+            raise click.ClickException(
+                f"No parquet files found in provided --parquet_dir entries")
+
+        meta_path, psm_path = merge_into_existing_db(
+            cluster_tsv=cluster_tsv,
+            scan_titles_files=list(scan_titles),
+            existing_metadata_path=existing_metadata,
+            existing_membership_path=existing_membership,
+            new_parquet_paths=new_parquet_paths,
+            species=species,
+            instrument=instrument,
+            charge=charge,
+            method_type=method_type,
+            output_dir=output_dir,
+            project_accession=dataset_name[0],
+        )
+    else:
+        meta_path, psm_path = build_cluster_db(
+            cluster_tsv=cluster_tsv,
+            scan_titles_files=list(scan_titles),
+            parquet_dirs=list(parquet_dir),
+            dataset_names=list(dataset_name),
+            species=species,
+            instrument=instrument,
+            charge_str=charge,
+            output_dir=output_dir,
+            method_type=method_type,
+            chunk_size=chunk_size,
+        )
 
     if meta_path:
         click.echo(f"Cluster metadata: {meta_path}")

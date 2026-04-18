@@ -345,8 +345,13 @@ def spectrum2msp(parquet_dir: str, method_type: str, cluster_tsv_file: str,
         logger.warning("No cluster membership found, no MSP to generate")
         return
 
-    # Setup output directory and file
-    output_dir = Path(parquet_dir) / 'msp' / species / instrument / charge
+    # Setup output directory and file. An empty instrument (passed by the
+    # Nextflow workflow when --skip_instrument is set) collapses the
+    # species/instrument/charge layout to species/charge.
+    if instrument and instrument.strip():
+        output_dir = Path(parquet_dir) / 'msp' / species / instrument / charge
+    else:
+        output_dir = Path(parquet_dir) / 'msp' / species / charge
     output_dir.mkdir(parents=True, exist_ok=True)
     basename = ParquetPathHandler(path_parquet_lst[0]).get_item_info()
     output = output_dir / f"{basename}_{uuid.uuid4()}.msp.gz"

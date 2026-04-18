@@ -23,6 +23,13 @@ CLUSTER_META_SCHEMA = pa.schema([
     ('best_pep', pa.float64()),
     ('best_qvalue', pa.float64()),
     ('purity', pa.float32()),
+    # Provenance: True when this cluster's ID was inherited from a previous
+    # round (i.e. a representative spectrum from an existing cluster DB was
+    # passed in and merged into this run).
+    ('is_reused_cluster', pa.bool_()),
+    # Provenance: distinct project accessions that contribute PSMs to this
+    # cluster, accumulated across all rounds.
+    ('source_datasets', pa.list_(pa.string())),
 ])
 
 PSM_MEMBERSHIP_SCHEMA = pa.schema([

@@ -1,6 +1,5 @@
 import click
 from pyspectrafuse.commands.spectrum2msp import spectrum2msp
-from pyspectrafuse.commands.cluster2parquet import cluster2parquet
 from pyspectrafuse.commands.incremental import incremental
 from pyspectrafuse.commands.convert_msnet_to_qpx import convert_to_qpx_cmd
 from pyspectrafuse.commands.parquet2dat import parquet2dat
@@ -23,7 +22,6 @@ def cli():
 
 
 cli.add_command(spectrum2msp)
-cli.add_command(cluster2parquet)
 cli.add_command(incremental)
 cli.add_command(convert_to_qpx_cmd)
 cli.add_command(parquet2dat)

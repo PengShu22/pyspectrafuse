@@ -49,6 +49,26 @@ docker run --rm -v /data:/data ghcr.io/bigbio/pyspectrafuse:0.0.4 \
     pyspectrafuse convert-dat -p /data/project -o /data/output -c 2
 ```
 
+### Building the container locally
+
+Two helper scripts are provided under `scripts/`:
+
+```bash
+# Build the Docker image (tagged pyspectrafuse:local and ghcr.io/bigbio/pyspectrafuse:<version>)
+./scripts/build_docker.sh
+
+# Build a Singularity/Apptainer SIF
+# - local:  docker build → docker-daemon:// → SIF     (needs Docker on the same host)
+# - remote: pull ghcr.io/bigbio/pyspectrafuse:<tag> directly into a SIF
+MODE=local  ./scripts/build_singularity.sh
+MODE=remote ./scripts/build_singularity.sh
+```
+
+On HPC login nodes (e.g. EBI Codon) use `MODE=remote` — it only needs
+`singularity`/`apptainer` on PATH and produces a SIF file whose name matches
+the Nextflow `codon_slurm` profile's Singularity cache convention
+(`ghcr.io-bigbio-pyspectrafuse-<version>.sif`).
+
 ## Requirements
 
 - Python >= 3.10
