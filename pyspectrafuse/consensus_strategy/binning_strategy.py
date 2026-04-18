@@ -60,8 +60,8 @@ class BinningStrategy(ConsensusStrategy):
         merge_median_and_top['ms2spectrumObj'] = merge_median_and_top.apply(
             lambda row: self.get_Ms2SpectrumObj(row), axis=1)
 
-        res = merge_median_and_top.groupby('cluster_accession').apply(
-            self.get_consensus_spectrum, include_groups=False)
+        res = merge_median_and_top.groupby('cluster_accession', group_keys=False).apply(
+            self.get_consensus_spectrum)
         return res, single_spectrum_df
 
     def get_consensus_spectrum(self, single_group: pd.DataFrame) -> pd.Series:

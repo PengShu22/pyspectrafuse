@@ -1,6 +1,9 @@
 import click
-from pyspectrafuse.commands.quantmsio2mgf import quantmsio2mgf
 from pyspectrafuse.commands.spectrum2msp import spectrum2msp
+from pyspectrafuse.commands.incremental import incremental
+from pyspectrafuse.commands.convert_msnet_to_qpx import convert_to_qpx_cmd
+from pyspectrafuse.commands.parquet2dat import parquet2dat
+from pyspectrafuse.commands.build_cluster_db import build_cluster_db_cmd
 from pyspectrafuse import __version__
 
 CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
@@ -12,14 +15,17 @@ CONTEXT_SETTINGS = dict(help_option_names=["-h", "--help"])
 def cli():
     """
     pyspectrafuse - Command-line utilities for spectrum clustering and conversion.
-    
-    This tool provides commands for converting parquet files to MGF format and
+
+    This tool provides commands for converting parquet files to dat format and
     generating MSP format files using various consensus spectrum strategies.
     """
 
 
-cli.add_command(quantmsio2mgf)
 cli.add_command(spectrum2msp)
+cli.add_command(incremental)
+cli.add_command(convert_to_qpx_cmd)
+cli.add_command(parquet2dat)
+cli.add_command(build_cluster_db_cmd)
 
 
 def main():

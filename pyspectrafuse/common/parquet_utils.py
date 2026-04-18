@@ -1,3 +1,4 @@
+import glob
 from pathlib import Path
 from typing import List
 import re
@@ -35,23 +36,35 @@ class ParquetPathHandler:
 
         if not match:
             raise ValueError(f"Could not extract project ID from path segment: {last_path_part}"
-                             f" (Please ensure the path contains a project identifier starting with letters followed by digits.")
+                             f" (Please ensure the path contains a project identifier starting with letters followed by digits.)")
 
         return match.group(1)
 
     @staticmethod
     def iter_parquet_dir(dir_path: str) -> List[Path]:
-        """
-        Extract the path information for all parquet files from the parquet Files subdirectory and return a list
-        :param dir_path: parquet file's path
-        :return:
-        """
-        parquet_path_lst = []
-        directory_path = Path(dir_path)
-        parquet_files = directory_path.rglob('*.parquet')
+        """Find PSM parquet files in a directory, excluding QPX metadata and output files.
 
-        # Iterate over all matching.parquet files
-        for parquet_file in parquet_files:
+        Skips .run.parquet, .sample.parquet, and pipeline output files
+        (cluster_metadata, psm_cluster_membership).
+        """
+        # Suffixes that are QPX metadata, not PSM data
+        _metadata_suffixes = {'.run.parquet', '.sample.parquet',
+                              '.dataset.parquet', '.ontology.parquet'}
+        _exclude_names = {'psm_cluster_membership', 'cluster_metadata'}
+        _exclude_dirs = {'cluster_db', 'msp', 'mgf_output'}
+
+        parquet_path_lst = []
+
+        # Use glob.glob (follows symlinks) instead of Path.rglob (does not)
+        for path_str in glob.glob(str(Path(dir_path) / '**/*.parquet'), recursive=True):
+            parquet_file = Path(path_str)
+            name = str(parquet_file)
+            if any(name.endswith(s) for s in _metadata_suffixes):
+                continue
+            if any(ex in parquet_file.stem for ex in _exclude_names):
+                continue
+            if any(part in _exclude_dirs for part in parquet_file.parts):
+                continue
             parquet_path_lst.append(parquet_file)
 
         return parquet_path_lst
