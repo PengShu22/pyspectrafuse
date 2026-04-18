@@ -4,7 +4,6 @@ from pyspectrafuse.consensus_strategy.consensus_strategy_base import ConsensusSt
 import pandas as pd
 import numpy as np
 import logging
-from pyspectrafuse.mgf_convert.parquet2mgf import Parquet2Mgf
 from pyspectrafuse.common.msp_utils import MspUtil
 
 logger = logging.getLogger(__name__)
@@ -84,10 +83,8 @@ class AverageSpectrumStrategy(ConsensusStrategy):
             
         merge_median_and_top['ms2spectrumDict'] = merge_median_and_top.apply(
             lambda row: self.get_Ms2SpectrumDict(row), axis=1)
-        res = merge_median_and_top.groupby('cluster_accession').apply(
-            self.get_average_spectrum, include_groups=False)
-
-        return res, single_spectrum_df
+        res = merge_median_and_top.groupby('cluster_accession', group_keys=False).apply(
+            self.get_average_spectrum)
 
         return res, single_spectrum_df
 
@@ -144,6 +141,17 @@ class AverageSpectrumStrategy(ConsensusStrategy):
             new_intensity_array = []
 
             ind_list = list(np.where(diff_array >= mz_accuracy)[0] + 1)
+
+            if not ind_list:
+                # All peaks are within mz_accuracy of each other — treat as single peak cluster
+                new_mz_array = [float(np.mean(mz_array_all))]
+                new_intensity_array = [float(np.mean(intensity_array_all))]
+                new_mz_array = np.array(new_mz_array)
+                new_intensity_array = np.array(new_intensity_array)
+                new_spectrum_index = ['pepmass', 'Nreps', 'posterior_error_probability', 'peptidoform',
+                                      'usi', 'charge', 'mz_array', 'intensity_array']
+                return pd.Series([pepmass, Nreps, pep, peptidoform, usi, charge, new_mz_array, new_intensity_array],
+                                 index=new_spectrum_index)
 
             i_prev = ind_list[0]
 
