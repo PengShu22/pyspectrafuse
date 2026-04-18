@@ -52,8 +52,15 @@ def parse_all_scan_titles(scan_titles_files: List[str]) -> pd.DataFrame:
     Returns:
         DataFrame with columns [mgf_basename, scannr, title, is_rep,
         old_cluster_id, run_file_name, orig_scan, peptidoform, parsed_charge].
+        Missing values in string columns are preserved as ``None`` (not NaN).
     """
-    rows = []
+    # Build column-wise to preserve None in object columns across pandas
+    # versions. Tuple-of-rows construction coerces None → NaN on newer pandas
+    # when neighbouring columns are numeric.
+    cols = {k: [] for k in (
+        'mgf_basename', 'scannr', 'title', 'is_rep', 'old_cluster_id',
+        'run_file_name', 'orig_scan', 'peptidoform', 'parsed_charge')}
+
     for titles_path in scan_titles_files:
         stem = Path(titles_path).name.replace('.scan_titles.txt', '')
         mgf_basename = f'{stem}.mgf'
@@ -66,11 +73,21 @@ def parse_all_scan_titles(scan_titles_files: List[str]) -> pd.DataFrame:
                 scannr = int(parts[1])
                 title = parts[2]
 
+                cols['mgf_basename'].append(mgf_basename)
+                cols['scannr'].append(scannr)
+                cols['title'].append(title)
+
                 if title.startswith(_REP_PREFIX):
-                    rows.append((mgf_basename, scannr, title, True,
-                                 title[len(_REP_PREFIX):],
-                                 None, None, None, None))
+                    cols['is_rep'].append(True)
+                    cols['old_cluster_id'].append(title[len(_REP_PREFIX):])
+                    cols['run_file_name'].append(None)
+                    cols['orig_scan'].append(None)
+                    cols['peptidoform'].append(None)
+                    cols['parsed_charge'].append(None)
                     continue
+
+                cols['is_rep'].append(False)
+                cols['old_cluster_id'].append(None)
 
                 m = _TITLE_PATTERN.match(title)
                 if m:
@@ -84,15 +101,27 @@ def parse_all_scan_titles(scan_titles_files: List[str]) -> pd.DataFrame:
                     else:
                         peptidoform = pep_charge
                         parsed_charge = 0
-                    rows.append((mgf_basename, scannr, title, False, None,
-                                 run_file, orig_scan, peptidoform, parsed_charge))
+                    cols['run_file_name'].append(run_file)
+                    cols['orig_scan'].append(orig_scan)
+                    cols['peptidoform'].append(peptidoform)
+                    cols['parsed_charge'].append(parsed_charge)
                 else:
-                    rows.append((mgf_basename, scannr, title, False, None,
-                                 None, None, None, None))
+                    cols['run_file_name'].append(None)
+                    cols['orig_scan'].append(None)
+                    cols['peptidoform'].append(None)
+                    cols['parsed_charge'].append(None)
 
-    return pd.DataFrame(rows, columns=[
-        'mgf_basename', 'scannr', 'title', 'is_rep', 'old_cluster_id',
-        'run_file_name', 'orig_scan', 'peptidoform', 'parsed_charge'])
+    df = pd.DataFrame(cols)
+    # Force object dtype and restore None for string columns — some pandas
+    # versions still coerce Python None to NaN inside object-dtype columns
+    # when the column is constructed from a list containing None alongside
+    # strings. Explicit restoration keeps `value is None` semantics.
+    for col in ('old_cluster_id', 'run_file_name', 'peptidoform'):
+        df[col] = df[col].astype(object)
+        na_mask = df[col].isna()
+        if na_mask.any():
+            df.loc[na_mask, col] = None
+    return df
 
 
 def resolve_incremental_clusters(
