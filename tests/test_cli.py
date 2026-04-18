@@ -47,12 +47,13 @@ class TestCLI:
         assert result.exit_code != 0 or '--parquet_dir' in result.output
 
     def test_incremental_help(self):
-        """Test incremental command help."""
+        """The incremental group now exposes only extract-reps-dat."""
         runner = CliRunner()
         result = runner.invoke(cli, ['incremental', '--help'])
         assert result.exit_code == 0
         assert 'extract-reps-dat' in result.output
-        assert 'merge-clusters' in result.output
+        # merge-clusters was folded into `build-cluster-db --existing_metadata`.
+        assert 'merge-clusters' not in result.output
 
     def test_incremental_extract_reps_dat_help(self):
         """Test incremental extract-reps-dat command help."""
@@ -61,9 +62,10 @@ class TestCLI:
         assert result.exit_code == 0
         assert 'cluster_metadata' in result.output
 
-    def test_incremental_merge_clusters_help(self):
-        """Test incremental merge-clusters command help."""
+    def test_build_cluster_db_help_mentions_merge_flags(self):
+        """build-cluster-db should advertise --existing_metadata / --existing_membership."""
         runner = CliRunner()
-        result = runner.invoke(cli, ['incremental', 'merge-clusters', '--help'])
+        result = runner.invoke(cli, ['build-cluster-db', '--help'])
         assert result.exit_code == 0
-        assert 'scan_titles_dir' in result.output
+        assert '--existing_metadata' in result.output
+        assert '--existing_membership' in result.output
